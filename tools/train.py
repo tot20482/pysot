@@ -18,7 +18,6 @@ from pysot.datasets.dataset import TrkDataset
 from pysot.core.config import cfg
 
 logger = logging.getLogger('global')
-
 parser = argparse.ArgumentParser(description='siamrpn tracking')
 parser.add_argument('--cfg', type=str, default='config.yaml')
 parser.add_argument('--seed', type=int, default=123456)
@@ -30,8 +29,8 @@ def seed_torch(seed=0):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
 
 def build_data_loader():
     logger.info("Building train dataset...")
@@ -39,15 +38,20 @@ def build_data_loader():
         samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples",
         ann_path="/kaggle/input/annotation/output.json"
     )
-    logger.info("Dataset built successfully.")
+    logger.info(f"Dataset built successfully. Found {len(train_dataset)} samples.")
+
+    # Tăng batch size tối đa bằng số samples nếu dataset nhỏ
+    batch_size = min(cfg.TRAIN.BATCH_SIZE, len(train_dataset))
+    num_workers = max(cfg.TRAIN.NUM_WORKERS, 2)
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=cfg.TRAIN.BATCH_SIZE,
-        num_workers=cfg.TRAIN.NUM_WORKERS,
+        batch_size=batch_size,
+        num_workers=num_workers,
         pin_memory=True,
         shuffle=True
     )
+    logger.info(f"Using batch size: {batch_size}, num_workers: {num_workers}")
     return train_loader
 
 def build_optimizer_lr(model):
@@ -76,7 +80,6 @@ def build_optimizer_lr(model):
 
     optimizer = torch.optim.SGD(trainable_params, momentum=cfg.TRAIN.MOMENTUM, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
     lr_scheduler = build_lr_scheduler(optimizer, epochs=cfg.TRAIN.EPOCH)
-    lr_scheduler.step(cfg.TRAIN.START_EPOCH)
     return optimizer, lr_scheduler
 
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
@@ -102,6 +105,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             loss.backward()
             clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
             optimizer.step()
+            lr_scheduler.step()  # cập nhật learning rate
 
         batch_time = time.time() - end
         end = time.time()
@@ -113,9 +117,9 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                 tb_writer.add_scalar('train/loss', loss.item(), idx)
                 tb_writer.add_scalar('train/batch_time', batch_time, idx)
                 mem_alloc = torch.cuda.memory_allocated() / 1024**2
-                mem_cached = torch.cuda.memory_reserved() / 1024**2
+                mem_reserved = torch.cuda.memory_reserved() / 1024**2
                 tb_writer.add_scalar('gpu/memory_alloc_MB', mem_alloc, idx)
-                tb_writer.add_scalar('gpu/memory_cached_MB', mem_cached, idx)
+                tb_writer.add_scalar('gpu/memory_reserved_MB', mem_reserved, idx)
 
 def main():
     seed_torch(args.seed)
