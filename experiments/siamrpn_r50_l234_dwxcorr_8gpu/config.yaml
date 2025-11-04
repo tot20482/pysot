@@ -4,7 +4,7 @@ BACKBONE:
     TYPE: "resnet50"
     KWARGS:
         used_layers: [2, 3, 4]
-    PRETRAINED: "/kaggle/working/pysot/experiments/siamrpn_r50_l234_dwxcorr_8gpu/config.yaml"
+    PRETRAINED: 'pretrained_models/resnet50.model'
     TRAIN_LAYERS: ['layer2', 'layer3', 'layer4']
     TRAIN_EPOCH: 10
     LAYERS_LR: 0.1
