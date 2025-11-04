@@ -159,36 +159,44 @@ def log_grads(model, tb_writer, tb_index):
 
 
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
+    # Ensure model is on GPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
     cur_lr = lr_scheduler.get_cur_lr()
     rank = get_rank()
-
     average_meter = AverageMeter()
 
     def is_valid_number(x):
-        return not(math.isnan(x) or math.isinf(x) or x > 1e4)
+        return not (math.isnan(x) or math.isinf(x) or x > 1e4)
 
     world_size = get_world_size()
-    num_per_epoch = len(train_loader.dataset) // \
-        cfg.TRAIN.EPOCH // (cfg.TRAIN.BATCH_SIZE * world_size)
+    num_per_epoch = len(train_loader.dataset) // cfg.TRAIN.EPOCH // (cfg.TRAIN.BATCH_SIZE * world_size)
     start_epoch = cfg.TRAIN.START_EPOCH
     epoch = start_epoch
 
-    if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and \
-            get_rank() == 0:
+    if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and get_rank() == 0:
         os.makedirs(cfg.TRAIN.SNAPSHOT_DIR)
 
     logger.info("model\n{}".format(describe(model.module)))
+
     end = time.time()
     for idx, data in enumerate(train_loader):
+        # 👉 Chuyển tất cả tensors trong data sang GPU
+        data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
+
         if epoch != idx // num_per_epoch + start_epoch:
             epoch = idx // num_per_epoch + start_epoch
 
             if get_rank() == 0:
                 torch.save(
-                        {'epoch': epoch,
-                         'state_dict': model.module.state_dict(),
-                         'optimizer': optimizer.state_dict()},
-                        cfg.TRAIN.SNAPSHOT_DIR+'/checkpoint_e%d.pth' % (epoch))
+                    {
+                        'epoch': epoch,
+                        'state_dict': model.module.state_dict(),
+                        'optimizer': optimizer.state_dict()
+                    },
+                    os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f'checkpoint_e{epoch}.pth')
+                )
 
             if epoch == cfg.TRAIN.EPOCH:
                 return
@@ -200,25 +208,24 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
             lr_scheduler.step(epoch)
             cur_lr = lr_scheduler.get_cur_lr()
-            logger.info('epoch: {}'.format(epoch+1))
+            logger.info('epoch: {}'.format(epoch + 1))
 
         tb_idx = idx
         if idx % num_per_epoch == 0 and idx != 0:
             for idx, pg in enumerate(optimizer.param_groups):
-                logger.info('epoch {} lr {}'.format(epoch+1, pg['lr']))
+                logger.info('epoch {} lr {}'.format(epoch + 1, pg['lr']))
                 if rank == 0:
-                    tb_writer.add_scalar('lr/group{}'.format(idx+1),
-                                         pg['lr'], tb_idx)
+                    tb_writer.add_scalar('lr/group{}'.format(idx + 1), pg['lr'], tb_idx)
 
         data_time = average_reduce(time.time() - end)
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        data = {k: v.cuda(non_blocking=True) for k, v in data.items()}
+        # 👉 Forward trên GPU
         outputs = model(data)
         loss = outputs['total_loss']
 
-        if is_valid_number(loss.data.item()):
+        if is_valid_number(loss.item()):
             optimizer.zero_grad()
             loss.backward()
             reduce_gradients(model)
@@ -226,16 +233,14 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             if rank == 0 and cfg.TRAIN.LOG_GRADS:
                 log_grads(model.module, tb_writer, tb_idx)
 
-            # clip gradient
             clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
             optimizer.step()
 
         batch_time = time.time() - end
-        batch_info = {}
-        batch_info['batch_time'] = average_reduce(batch_time)
-        batch_info['data_time'] = average_reduce(data_time)
+
+        batch_info = {'batch_time': average_reduce(batch_time), 'data_time': average_reduce(data_time)}
         for k, v in sorted(outputs.items()):
-            batch_info[k] = average_reduce(v.data.item())
+            batch_info[k] = average_reduce(v.item())
 
         average_meter.update(**batch_info)
 
@@ -243,21 +248,14 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             for k, v in batch_info.items():
                 tb_writer.add_scalar(k, v, tb_idx)
 
-            if (idx+1) % cfg.TRAIN.PRINT_FREQ == 0:
-                info = "Epoch: [{}][{}/{}] lr: {:.6f}\n".format(
-                            epoch+1, (idx+1) % num_per_epoch,
-                            num_per_epoch, cur_lr)
+            if (idx + 1) % cfg.TRAIN.PRINT_FREQ == 0:
+                info = f"Epoch: [{epoch + 1}][{(idx + 1) % num_per_epoch}/{num_per_epoch}] lr: {cur_lr:.6f}\n"
                 for cc, (k, v) in enumerate(batch_info.items()):
-                    if cc % 2 == 0:
-                        info += ("\t{:s}\t").format(
-                                getattr(average_meter, k))
-                    else:
-                        info += ("{:s}\n").format(
-                                getattr(average_meter, k))
+                    info += f"\t{k}: {v:.4f}"
+                    info += "\n" if cc % 2 == 1 else "\t"
                 logger.info(info)
-                print_speed(idx+1+start_epoch*num_per_epoch,
-                            average_meter.batch_time.avg,
-                            cfg.TRAIN.EPOCH * num_per_epoch)
+                print_speed(idx + 1 + start_epoch * num_per_epoch, average_meter.batch_time.avg, cfg.TRAIN.EPOCH * num_per_epoch)
+
         end = time.time()
 
 
@@ -281,15 +279,10 @@ def main():
         logger.info("config \n{}".format(json.dumps(cfg, indent=4)))
 
     # create model
-    model = ModelBuilder().cuda().train()
-    # Debug: check if model is on GPU
-    if torch.cuda.is_available():
-        device = next(model.parameters()).device
-        logger.info(f"🔥 Model is using device: {device}")
-        print(f"🔥 Model is using device: {device}")
-    else:
-        logger.warning("⚠️ CUDA not available, model is running on CPU")
-        print("⚠️ CUDA not available, model is running on CPU")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ModelBuilder().to(device).train()
+
+    logger.info(f"🔥 Using device: {device}")
 
 
     # load pretrained backbone weights
