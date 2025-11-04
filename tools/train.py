@@ -55,19 +55,50 @@ def seed_torch(seed=0):
 
 
 def build_data_loader():
-    logger.info("build train dataset")
-    # train_dataset
-    train_dataset = TrkDataset()
-    logger.info("build dataset done")
+    """
+    Build PyTorch DataLoader for training.
+    - Uses TrkDataset.
+    - Supports multi-GPU with DistributedSampler.
+    - Handles reproducible seed for workers.
+    """
+    logger.info("Building train dataset...")
+    
+    # Tạo dataset
+    try:
+        train_dataset = TrkDataset()
+    except RuntimeError as e:
+        logger.error(f"Error building dataset: {e}")
+        raise
 
+    logger.info(f"Dataset contains {len(train_dataset)} samples.")
+    
     train_sampler = None
-    if get_world_size() > 1:
+    shuffle = True  # default shuffle
+
+    world_size = get_world_size()
+    rank = get_rank()
+    
+    if world_size > 1:
+        # Multi-GPU: dùng DistributedSampler
         train_sampler = DistributedSampler(train_dataset)
-    train_loader = DataLoader(train_dataset,
-                              batch_size=cfg.TRAIN.BATCH_SIZE,
-                              num_workers=cfg.TRAIN.NUM_WORKERS,
-                              pin_memory=True,
-                              sampler=train_sampler)
+        shuffle = False  # sampler quyết định shuffle
+    
+    # Worker init function để đảm bảo reproducibility
+    def worker_init_fn(worker_id):
+        np.random.seed(args.seed + worker_id)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=cfg.TRAIN.BATCH_SIZE,
+        num_workers=cfg.TRAIN.NUM_WORKERS,
+        pin_memory=True,
+        sampler=train_sampler,
+        shuffle=shuffle,
+        worker_init_fn=worker_init_fn,
+        drop_last=True  # bỏ batch cuối nếu nhỏ hơn batch_size
+    )
+
+    logger.info("Train DataLoader created successfully.")
     return train_loader
 
 
