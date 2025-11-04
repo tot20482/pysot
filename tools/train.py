@@ -106,6 +106,7 @@ def build_opt_lr(model, current_epoch=0):
 
 
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
+    # Chọn device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
@@ -113,10 +114,11 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
     if torch.cuda.is_available():
         logger.info(f"🚀 GPU name: {torch.cuda.get_device_name(0)}")
 
+    # Lấy learning rate hiện tại
     cur_lr = lr_scheduler.get_cur_lr()
     rank = get_rank()
-    average_meter = AverageMeter()
     world_size = get_world_size()
+    average_meter = AverageMeter()
     num_per_epoch = len(train_loader.dataset) // cfg.TRAIN.EPOCH // (cfg.TRAIN.BATCH_SIZE * world_size)
     start_epoch = cfg.TRAIN.START_EPOCH
     epoch = start_epoch
@@ -124,37 +126,44 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
     if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and rank == 0:
         os.makedirs(cfg.TRAIN.SNAPSHOT_DIR)
 
-    logger.info("model\n{}".format(describe(model.module)))
+    logger.info("model\n{}".format(describe(model.module if hasattr(model, "module") else model)))
     end = time.time()
 
-    for idx, data in enumerate(train_loader):
-        # ✅ Ensure batch tensors are on GPU
-        for k, v in data.items():
+    # Hàm helper chuyển batch sang GPU
+    def move_to_device(batch, device):
+        for k, v in batch.items():
             if isinstance(v, torch.Tensor):
-                if v.device.type != "cuda":
-                    logger.warning(f"⚠️ Tensor {k} is still on CPU! Moving to GPU...")
-                data[k] = v.to(device, non_blocking=True)
+                batch[k] = v.to(device, non_blocking=True)
+        return batch
 
-        # ✅ Log GPU memory every 100 batches
+    # Loop train
+    for idx, data in enumerate(train_loader):
+        data = move_to_device(data, device)  # chuyển toàn bộ batch sang GPU
+
+        # Log GPU memory mỗi 100 batch
         if torch.cuda.is_available() and idx % 100 == 0:
-            mem = torch.cuda.memory_allocated() / 1024**2
-            logger.info(f"[GPU] Memory allocated: {mem:.2f} MB | step={idx}")
+            mem_alloc = torch.cuda.memory_allocated() / 1024**2
+            mem_cached = torch.cuda.memory_reserved() / 1024**2
+            logger.info(f"[GPU] Step {idx} | Allocated: {mem_alloc:.2f} MB | Cached: {mem_cached:.2f} MB")
             if tb_writer:
-                tb_writer.add_scalar("gpu/memory_MB", mem, idx)
+                tb_writer.add_scalar("gpu/memory_alloc_MB", mem_alloc, idx)
+                tb_writer.add_scalar("gpu/memory_cached_MB", mem_cached, idx)
 
-        # Forward
+        # Forward pass
         outputs = model(data)
         loss = outputs['total_loss']
 
         if not (math.isnan(loss.item()) or math.isinf(loss.item())):
             optimizer.zero_grad()
             loss.backward()
-            reduce_gradients(model)
+            reduce_gradients(model)  # nếu Distributed
             clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
             optimizer.step()
 
+        # Cập nhật thời gian batch
         batch_time = time.time() - end
         end = time.time()
+
 
 
 def main():
