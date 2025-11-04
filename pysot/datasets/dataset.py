@@ -181,7 +181,8 @@ class TrkDataset(Dataset):
 
         search_box = self._compute_search_box_from_ann(search_frame, ann_bbox)
         search_crop, bbox = self.search_aug(search_frame, search_box, cfg.TRAIN.SEARCH_SIZE, gray=False)
-        search_t = self.to_tensor(cv2.cvtColor(search_crop, cv2.COLOR_BGR2RGB))
+        search_t = self.to_tensor(cv2.cvtColor(search_crop.astype(np.float32), cv2.COLOR_BGR2RGB))
+
 
         cls, delta, delta_weight, overlap = self.anchor_target(bbox, cfg.TRAIN.OUTPUT_SIZE, neg=False)
 
