@@ -13,34 +13,24 @@ from pysot.utils.bbox import center2corner, Center
 logger = logging.getLogger("global")
 
 class TrkDataset(Dataset):
-    """
-    TrkDataset cho folder-based samples:
-    samples_root/
-        ├─ Backpack_0/
-        |    ├─ object_images/img_1.jpg ...
-        |    └─ drone_video.mp4
-        ...
-    Annotations optional tại <samples_root_parent>/annotations/annotations.json
-    """
-    def __init__(self, samples_root=None, num_templates=3, frame_step=1):
+    def __init__(self, samples_root=None, ann_path=None, num_templates=3, frame_step=1):
         super(TrkDataset, self).__init__()
-
-        cur_path = os.path.dirname(os.path.realpath(__file__))
+        
         if samples_root is None:
-            samples_root = os.path.join(cur_path, '../../observing/train/samples')
+            samples_root = "/kaggle/input/zaloai2025-aeroeyes/observing/train/samples"
         self.samples_root = os.path.abspath(samples_root)
         self.num_templates = num_templates
         self.frame_step = frame_step
 
-        # load annotation nếu có
-        ann_path = os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
+        # load annotation
+        if ann_path is None:
+            ann_path = os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
+
         if os.path.exists(ann_path):
-            try:
-                with open(ann_path, 'r') as f:
-                    self.annotations = json.load(f)
-            except Exception:
-                self.annotations = {}
+            with open(ann_path, 'r') as f:
+                self.annotations = json.load(f)
         else:
+            logger.warning(f"Annotation file not found: {ann_path}, using empty dict")
             self.annotations = {}
 
         # danh sách folder sample
