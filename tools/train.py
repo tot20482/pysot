@@ -1,19 +1,8 @@
 # Copyright (c) SenseTime. All Rights Reserved.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import argparse
-import logging
-import os
-import time
-import math
-import json
-import random
+from __future__ import absolute_import, division, print_function, unicode_literals
+import argparse, logging, os, time, math, json, random
 import numpy as np
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -23,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from pysot.utils.lr_scheduler import build_lr_scheduler
 from pysot.utils.log_helper import init_log, print_speed, add_file_handler
-from pysot.utils.distributed import dist_init, DistModule, reduce_gradients,\
+from pysot.utils.distributed import dist_init, DistModule, reduce_gradients, \
         average_reduce, get_rank, get_world_size
 from pysot.utils.model_load import load_pretrain, restore_from
 from pysot.utils.average_meter import AverageMeter
@@ -32,15 +21,11 @@ from pysot.models.model_builder import ModelBuilder
 from pysot.datasets.dataset import TrkDataset
 from pysot.core.config import cfg
 
-
 logger = logging.getLogger('global')
 parser = argparse.ArgumentParser(description='siamrpn tracking')
-parser.add_argument('--cfg', type=str, default='config.yaml',
-                    help='configuration of tracking')
-parser.add_argument('--seed', type=int, default=123456,
-                    help='random seed')
-parser.add_argument('--local_rank', type=int, default=0,
-                    help='compulsory for pytorch launcer')
+parser.add_argument('--cfg', type=str, default='config.yaml')
+parser.add_argument('--seed', type=int, default=123456)
+parser.add_argument('--local_rank', type=int, default=0)
 args = parser.parse_args()
 
 
@@ -75,7 +60,6 @@ def build_data_loader():
         sampler=train_sampler
     )
     return train_loader
-
 
 
 def build_opt_lr(model, current_epoch=0):
@@ -121,221 +105,93 @@ def build_opt_lr(model, current_epoch=0):
     return optimizer, lr_scheduler
 
 
-def log_grads(model, tb_writer, tb_index):
-    def weights_grads(model):
-        grad = {}
-        weights = {}
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                grad[name] = param.grad
-                weights[name] = param.data
-        return grad, weights
-
-    grad, weights = weights_grads(model)
-    feature_norm, rpn_norm = 0, 0
-    for k, g in grad.items():
-        _norm = g.data.norm(2)
-        weight = weights[k]
-        w_norm = weight.norm(2)
-        if 'feature' in k:
-            feature_norm += _norm ** 2
-        else:
-            rpn_norm += _norm ** 2
-
-        tb_writer.add_scalar('grad_all/'+k.replace('.', '/'),
-                             _norm, tb_index)
-        tb_writer.add_scalar('weight_all/'+k.replace('.', '/'),
-                             w_norm, tb_index)
-        tb_writer.add_scalar('w-g/'+k.replace('.', '/'),
-                             w_norm/(1e-20 + _norm), tb_index)
-    tot_norm = feature_norm + rpn_norm
-    tot_norm = tot_norm ** 0.5
-    feature_norm = feature_norm ** 0.5
-    rpn_norm = rpn_norm ** 0.5
-
-    tb_writer.add_scalar('grad/tot', tot_norm, tb_index)
-    tb_writer.add_scalar('grad/feature', feature_norm, tb_index)
-    tb_writer.add_scalar('grad/rpn', rpn_norm, tb_index)
-
-
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
-    # Ensure model is on GPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+
+    logger.info(f"🔥 Using device: {device} | CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"🚀 GPU name: {torch.cuda.get_device_name(0)}")
 
     cur_lr = lr_scheduler.get_cur_lr()
     rank = get_rank()
     average_meter = AverageMeter()
-
-    def is_valid_number(x):
-        return not (math.isnan(x) or math.isinf(x) or x > 1e4)
-
     world_size = get_world_size()
     num_per_epoch = len(train_loader.dataset) // cfg.TRAIN.EPOCH // (cfg.TRAIN.BATCH_SIZE * world_size)
     start_epoch = cfg.TRAIN.START_EPOCH
     epoch = start_epoch
 
-    if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and get_rank() == 0:
+    if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and rank == 0:
         os.makedirs(cfg.TRAIN.SNAPSHOT_DIR)
 
     logger.info("model\n{}".format(describe(model.module)))
-
     end = time.time()
+
     for idx, data in enumerate(train_loader):
-        # 👉 Chuyển tất cả tensors trong data sang GPU
-        data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
+        # ✅ Ensure batch tensors are on GPU
+        for k, v in data.items():
+            if isinstance(v, torch.Tensor):
+                if v.device.type != "cuda":
+                    logger.warning(f"⚠️ Tensor {k} is still on CPU! Moving to GPU...")
+                data[k] = v.to(device, non_blocking=True)
 
-        if epoch != idx // num_per_epoch + start_epoch:
-            epoch = idx // num_per_epoch + start_epoch
+        # ✅ Log GPU memory every 100 batches
+        if torch.cuda.is_available() and idx % 100 == 0:
+            mem = torch.cuda.memory_allocated() / 1024**2
+            logger.info(f"[GPU] Memory allocated: {mem:.2f} MB | step={idx}")
+            if tb_writer:
+                tb_writer.add_scalar("gpu/memory_MB", mem, idx)
 
-            if get_rank() == 0:
-                torch.save(
-                    {
-                        'epoch': epoch,
-                        'state_dict': model.module.state_dict(),
-                        'optimizer': optimizer.state_dict()
-                    },
-                    os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f'checkpoint_e{epoch}.pth')
-                )
-
-            if epoch == cfg.TRAIN.EPOCH:
-                return
-
-            if cfg.BACKBONE.TRAIN_EPOCH == epoch:
-                logger.info('start training backbone.')
-                optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
-                logger.info("model\n{}".format(describe(model.module)))
-
-            lr_scheduler.step(epoch)
-            cur_lr = lr_scheduler.get_cur_lr()
-            logger.info('epoch: {}'.format(epoch + 1))
-
-        tb_idx = idx
-        if idx % num_per_epoch == 0 and idx != 0:
-            for idx, pg in enumerate(optimizer.param_groups):
-                logger.info('epoch {} lr {}'.format(epoch + 1, pg['lr']))
-                if rank == 0:
-                    tb_writer.add_scalar('lr/group{}'.format(idx + 1), pg['lr'], tb_idx)
-
-        data_time = average_reduce(time.time() - end)
-        if rank == 0:
-            tb_writer.add_scalar('time/data', data_time, tb_idx)
-
-        # 👉 Forward trên GPU
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        for idx, data in enumerate(train_loader):
-            # 🚀 chuyển ALL tensors sang GPU
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
-                    data[k] = v.to(device, non_blocking=True)
-
-            # forward trên GPU
-            outputs = model(data)
-
+        # Forward
+        outputs = model(data)
         loss = outputs['total_loss']
 
-        if is_valid_number(loss.item()):
+        if not (math.isnan(loss.item()) or math.isinf(loss.item())):
             optimizer.zero_grad()
             loss.backward()
             reduce_gradients(model)
-
-            if rank == 0 and cfg.TRAIN.LOG_GRADS:
-                log_grads(model.module, tb_writer, tb_idx)
-
             clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
             optimizer.step()
 
         batch_time = time.time() - end
-
-        batch_info = {'batch_time': average_reduce(batch_time), 'data_time': average_reduce(data_time)}
-        for k, v in sorted(outputs.items()):
-            batch_info[k] = average_reduce(v.item())
-
-        average_meter.update(**batch_info)
-
-        if rank == 0:
-            for k, v in batch_info.items():
-                tb_writer.add_scalar(k, v, tb_idx)
-
-            if (idx + 1) % cfg.TRAIN.PRINT_FREQ == 0:
-                info = f"Epoch: [{epoch + 1}][{(idx + 1) % num_per_epoch}/{num_per_epoch}] lr: {cur_lr:.6f}\n"
-                for cc, (k, v) in enumerate(batch_info.items()):
-                    info += f"\t{k}: {v:.4f}"
-                    info += "\n" if cc % 2 == 1 else "\t"
-                logger.info(info)
-                print_speed(idx + 1 + start_epoch * num_per_epoch, average_meter.batch_time.avg, cfg.TRAIN.EPOCH * num_per_epoch)
-
         end = time.time()
-
 
 
 def main():
     rank, world_size = dist_init()
     logger.info("init done")
 
-    # load cfg
     cfg.merge_from_file(args.cfg)
     if rank == 0:
         if not os.path.exists(cfg.TRAIN.LOG_DIR):
             os.makedirs(cfg.TRAIN.LOG_DIR)
         init_log('global', logging.INFO)
-        if cfg.TRAIN.LOG_DIR:
-            add_file_handler('global',
-                             os.path.join(cfg.TRAIN.LOG_DIR, 'logs.txt'),
-                             logging.INFO)
-
+        add_file_handler('global', os.path.join(cfg.TRAIN.LOG_DIR, 'logs.txt'), logging.INFO)
         logger.info("Version Information: \n{}\n".format(commit()))
         logger.info("config \n{}".format(json.dumps(cfg, indent=4)))
 
-    # create model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ModelBuilder().to(device).train()
+    logger.info(f"🔥 Model loaded on {device}")
 
-    logger.info(f"🔥 Using device: {device}")
-
-
-    # load pretrained backbone weights
     if cfg.BACKBONE.PRETRAINED:
-        cur_path = os.path.dirname(os.path.realpath(__file__))
-        if cfg.BACKBONE.PRETRAINED:
-    # Nếu bạn biết chính xác đường dẫn tuyệt đối đến model
-            backbone_path = "/kaggle/input/mobilenetv2/model.pth"  # chỉnh theo vị trí thực tế
+        backbone_path = "/kaggle/input/mobilenetv2/model.pth"
         if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
             load_pretrain(model.backbone, backbone_path)
         else:
             raise FileNotFoundError(f"Pretrained model not found or empty: {backbone_path}")
 
-
-    # create tensorboard writer
-    if rank == 0 and cfg.TRAIN.LOG_DIR:
-        tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)
-    else:
-        tb_writer = None
-
-    # build dataset loader
+    tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR) if rank == 0 else None
     train_loader = build_data_loader()
+    optimizer, lr_scheduler = build_opt_lr(model, cfg.TRAIN.START_EPOCH)
 
-    # build optimizer and lr_scheduler
-    optimizer, lr_scheduler = build_opt_lr(model,
-                                           cfg.TRAIN.START_EPOCH)
-
-    # resume training
     if cfg.TRAIN.RESUME:
-        logger.info("resume from {}".format(cfg.TRAIN.RESUME))
-        assert os.path.isfile(cfg.TRAIN.RESUME), \
-            '{} is not a valid file.'.format(cfg.TRAIN.RESUME)
-        model, optimizer, cfg.TRAIN.START_EPOCH = \
-            restore_from(model, optimizer, cfg.TRAIN.RESUME)
-    # load pretrain
+        model, optimizer, cfg.TRAIN.START_EPOCH = restore_from(model, optimizer, cfg.TRAIN.RESUME)
     elif cfg.TRAIN.PRETRAINED:
         load_pretrain(model, cfg.TRAIN.PRETRAINED)
+
     dist_model = DistModule(model)
 
-    logger.info(lr_scheduler)
-    logger.info("model prepare done")
-
-    # start training
     train(train_loader, dist_model, optimizer, lr_scheduler, tb_writer)
 
 
