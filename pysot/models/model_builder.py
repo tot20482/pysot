@@ -74,42 +74,112 @@ class ModelBuilder(nn.Module):
         cls = F.log_softmax(cls, dim=4)
         return cls
 
-    def forward(self, data):
-        """ only used in training
-        """
-        template = data['template'].cuda()
-        search = data['search'].cuda()
-        label_cls = data['label_cls'].cuda()
-        label_loc = data['label_loc'].cuda()
-        label_loc_weight = data['label_loc_weight'].cuda()
+    # def forward(self, data):
+    #     """ only used in training
+    #     """
+    #     template = data['template'].cuda()
+    #     search = data['search'].cuda()
+    #     label_cls = data['label_cls'].cuda()
+    #     label_loc = data['label_loc'].cuda()
+    #     label_loc_weight = data['label_loc_weight'].cuda()
 
-        # get feature
-        zf = self.backbone(template)
-        xf = self.backbone(search)
-        if cfg.MASK.MASK:
-            zf = zf[-1]
-            self.xf_refine = xf[:-1]
-            xf = xf[-1]
-        if cfg.ADJUST.ADJUST:
-            zf = self.neck(zf)
-            xf = self.neck(xf)
-        cls, loc = self.rpn_head(zf, xf)
+    #     # get feature
+    #     zf = self.backbone(template)
+    #     xf = self.backbone(search)
+    #     if cfg.MASK.MASK:
+    #         zf = zf[-1]
+    #         self.xf_refine = xf[:-1]
+    #         xf = xf[-1]
+    #     if cfg.ADJUST.ADJUST:
+    #         zf = self.neck(zf)
+    #         xf = self.neck(xf)
+    #     cls, loc = self.rpn_head(zf, xf)
 
-        # get loss
-        cls = self.log_softmax(cls)
-        cls_loss = select_cross_entropy_loss(cls, label_cls)
-        loc_loss = weight_l1_loss(loc, label_loc, label_loc_weight)
+    #     # get loss
+    #     cls = self.log_softmax(cls)
+    #     cls_loss = select_cross_entropy_loss(cls, label_cls)
+    #     loc_loss = weight_l1_loss(loc, label_loc, label_loc_weight)
 
-        outputs = {}
-        outputs['total_loss'] = cfg.TRAIN.CLS_WEIGHT * cls_loss + \
-            cfg.TRAIN.LOC_WEIGHT * loc_loss
-        outputs['cls_loss'] = cls_loss
-        outputs['loc_loss'] = loc_loss
+    #     outputs = {}
+    #     outputs['total_loss'] = cfg.TRAIN.CLS_WEIGHT * cls_loss + \
+    #         cfg.TRAIN.LOC_WEIGHT * loc_loss
+    #     outputs['cls_loss'] = cls_loss
+    #     outputs['loc_loss'] = loc_loss
 
-        if cfg.MASK.MASK:
-            # TODO
-            mask, self.mask_corr_feature = self.mask_head(zf, xf)
-            mask_loss = None
-            outputs['total_loss'] += cfg.TRAIN.MASK_WEIGHT * mask_loss
-            outputs['mask_loss'] = mask_loss
-        return outputs
+    #     if cfg.MASK.MASK:
+    #         # TODO
+    #         mask, self.mask_corr_feature = self.mask_head(zf, xf)
+    #         mask_loss = None
+    #         outputs['total_loss'] += cfg.TRAIN.MASK_WEIGHT * mask_loss
+    #         outputs['mask_loss'] = mask_loss
+    #     return outputs
+
+def forward(self, data):
+    """ only used in training — hỗ trợ nhiều ảnh template """
+    # ---- Dữ liệu vào ----
+    # templates: [B, N, 3, H, W] (N=3 ảnh mẫu)
+    # search: [B, 3, Hs, Ws]
+    # Các nhãn huấn luyện
+    templates = data['templates'].cuda()  # list hoặc tensor (B, N, 3, H, W)
+    search = data['search'].cuda()
+    label_cls = data['label_cls'].cuda()
+    label_loc = data['label_loc'].cuda()
+    label_loc_weight = data['label_loc_weight'].cuda()
+
+    B, N, C, H, W = templates.shape  # ví dụ (B,3,3,127,127)
+
+    # ---- Trích feature cho tất cả template ----
+    # Gộp batch và N lại thành một: [B*N, 3, H, W]
+    templates_flat = templates.view(B * N, C, H, W)
+    zf_all = self.backbone(templates_flat)  # trả về feature hoặc list feature
+
+    # Nếu backbone trả về list (VD ResNet), ta xử lý cho từng tầng
+    if isinstance(zf_all, list):
+        # zf_all: list các feature map [layer1, layer2, ...]
+        zf = []
+        for i in range(len(zf_all)):
+            # reshape lại về [B, N, C', H', W'] rồi lấy trung bình trên N
+            z_layer = zf_all[i].view(B, N, *zf_all[i].shape[1:])
+            zf.append(z_layer.mean(dim=1))
+    else:
+        # Nếu backbone trả tensor duy nhất
+        zf_all = zf_all.view(B, N, *zf_all.shape[1:])
+        zf = zf_all.mean(dim=1)
+
+    # ---- Feature của ảnh search ----
+    xf = self.backbone(search)
+
+    # ---- Nếu có mask branch ----
+    if cfg.MASK.MASK:
+        # backbone trả list: lấy phần cuối cho tracking, còn lại để refine
+        zf = zf[-1]
+        self.xf_refine = xf[:-1]
+        xf = xf[-1]
+
+    # ---- Nếu có neck ----
+    if cfg.ADJUST.ADJUST:
+        zf = self.neck(zf)
+        xf = self.neck(xf)
+
+    # ---- Head SiamRPN ----
+    cls, loc = self.rpn_head(zf, xf)
+
+    # ---- Tính loss ----
+    cls = self.log_softmax(cls)
+    cls_loss = select_cross_entropy_loss(cls, label_cls)
+    loc_loss = weight_l1_loss(loc, label_loc, label_loc_weight)
+
+    outputs = {
+        'total_loss': cfg.TRAIN.CLS_WEIGHT * cls_loss + cfg.TRAIN.LOC_WEIGHT * loc_loss,
+        'cls_loss': cls_loss,
+        'loc_loss': loc_loss,
+    }
+
+    # ---- Mask branch (nếu có) ----
+    if cfg.MASK.MASK:
+        mask, self.mask_corr_feature = self.mask_head(zf, xf)
+        mask_loss = None  # TODO: nếu bạn có ground truth mask
+        outputs['total_loss'] += cfg.TRAIN.MASK_WEIGHT * (mask_loss or 0)
+        outputs['mask_loss'] = mask_loss
+
+    return outputs

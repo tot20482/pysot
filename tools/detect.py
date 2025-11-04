@@ -347,7 +347,7 @@ def process_video_with_annotations(video_path, annotation_data, output_dir):
 if __name__ == "__main__":
     # Example usage
     import json
-    
+        
     # Load annotations
     with open(r"\ZaloAI\output.json", "r") as f:
         annotation_data = json.load(f)

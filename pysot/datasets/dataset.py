@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 import os
+import glob
 
 import cv2
 import numpy as np
@@ -138,142 +139,258 @@ class SubDataset(object):
         return self.num
 
 
+# --- Replace / insert this TrkDataset implementation into pysot/datasets/dataset.py ---
+
 class TrkDataset(Dataset):
-    def __init__(self,):
+    """
+    TrkDataset for folder-based samples:
+      samples_root/
+        ├─ Backpack_0/
+        |    ├─ object_images/img_1.jpg, img_2.jpg, img_3.jpg
+        |    └─ drone_video.mp4
+        ├─ Backpack_1/
+        |    ...
+    Optional annotations file (annotations.json) expected at:
+      <same_parent>/annotations/annotations.json
+    Format expected (same as the challenge): mapping video_id -> list of bboxes per frame.
+    """
+
+    def __init__(self, samples_root=None, num_templates=3, frame_step=1):
         super(TrkDataset, self).__init__()
 
-        desired_size = (cfg.TRAIN.SEARCH_SIZE - cfg.TRAIN.EXEMPLAR_SIZE) / \
-            cfg.ANCHOR.STRIDE + 1 + cfg.TRAIN.BASE_SIZE
-        if desired_size != cfg.TRAIN.OUTPUT_SIZE:
-            raise Exception('size not match!')
+        cur_path = os.path.dirname(os.path.realpath(__file__))
 
-        # create anchor target
-        self.anchor_target = AnchorTarget()
+        # default samples root (relative to dataset.py)
+        if samples_root is None:
+            samples_root = os.path.join(cur_path, '../../observing/train/samples')
+        self.samples_root = os.path.abspath(samples_root)
+        self.num_templates = num_templates
+        self.frame_step = frame_step
 
-        # create sub dataset
-        self.all_dataset = []
-        start = 0
-        self.num = 0
-        for name in cfg.DATASET.NAMES:
-            subdata_cfg = getattr(cfg.DATASET, name)
-            sub_dataset = SubDataset(
-                    name,
-                    subdata_cfg.ROOT,
-                    subdata_cfg.ANNO,
-                    subdata_cfg.FRAME_RANGE,
-                    subdata_cfg.NUM_USE,
-                    start
-                )
-            start += sub_dataset.num
-            self.num += sub_dataset.num_use
-
-            sub_dataset.log()
-            self.all_dataset.append(sub_dataset)
-
-        # data augmentation
-        self.template_aug = Augmentation(
-                cfg.DATASET.TEMPLATE.SHIFT,
-                cfg.DATASET.TEMPLATE.SCALE,
-                cfg.DATASET.TEMPLATE.BLUR,
-                cfg.DATASET.TEMPLATE.FLIP,
-                cfg.DATASET.TEMPLATE.COLOR
-            )
-        self.search_aug = Augmentation(
-                cfg.DATASET.SEARCH.SHIFT,
-                cfg.DATASET.SEARCH.SCALE,
-                cfg.DATASET.SEARCH.BLUR,
-                cfg.DATASET.SEARCH.FLIP,
-                cfg.DATASET.SEARCH.COLOR
-            )
-        videos_per_epoch = cfg.DATASET.VIDEOS_PER_EPOCH
-        self.num = videos_per_epoch if videos_per_epoch > 0 else self.num
-        self.num *= cfg.TRAIN.EPOCH
-        self.pick = self.shuffle()
-
-    def shuffle(self):
-        pick = []
-        m = 0
-        while m < self.num:
-            p = []
-            for sub_dataset in self.all_dataset:
-                sub_p = sub_dataset.pick
-                p += sub_p
-            np.random.shuffle(p)
-            pick += p
-            m = len(pick)
-        logger.info("shuffle done!")
-        logger.info("dataset length {}".format(self.num))
-        return pick[:self.num]
-
-    def _find_dataset(self, index):
-        for dataset in self.all_dataset:
-            if dataset.start_idx + dataset.num > index:
-                return dataset, index - dataset.start_idx
-
-    def _get_bbox(self, image, shape):
-        imh, imw = image.shape[:2]
-        if len(shape) == 4:
-            w, h = shape[2]-shape[0], shape[3]-shape[1]
+        # Try load annotations if exists
+        ann_path = os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
+        if os.path.exists(ann_path):
+            try:
+                with open(ann_path, 'r') as f:
+                    self.annotations = json.load(f)
+            except Exception:
+                self.annotations = {}
         else:
-            w, h = shape
-        context_amount = 0.5
-        exemplar_size = cfg.TRAIN.EXEMPLAR_SIZE
-        wc_z = w + context_amount * (w+h)
-        hc_z = h + context_amount * (w+h)
-        s_z = np.sqrt(wc_z * hc_z)
-        scale_z = exemplar_size / s_z
-        w = w*scale_z
-        h = h*scale_z
-        cx, cy = imw//2, imh//2
-        bbox = center2corner(Center(cx, cy, w, h))
-        return bbox
+            self.annotations = {}
+
+        # collect sample folders
+        self.sample_dirs = sorted([d for d in glob(os.path.join(self.samples_root, '*')) if os.path.isdir(d)])
+        if len(self.sample_dirs) == 0:
+            raise RuntimeError("No sample folders found in %s" % self.samples_root)
+
+        # augmentation (reuse existing config keys)
+        self.template_aug = Augmentation(
+            cfg.DATASET.TEMPLATE.SHIFT,
+            cfg.DATASET.TEMPLATE.SCALE,
+            cfg.DATASET.TEMPLATE.BLUR,
+            cfg.DATASET.TEMPLATE.FLIP,
+            cfg.DATASET.TEMPLATE.COLOR
+        )
+        self.search_aug = Augmentation(
+            cfg.DATASET.SEARCH.SHIFT,
+            cfg.DATASET.SEARCH.SCALE,
+            cfg.DATASET.SEARCH.BLUR,
+            cfg.DATASET.SEARCH.FLIP,
+            cfg.DATASET.SEARCH.COLOR
+        )
+
+        # precompute transforms for numpy->tensor
+        self.to_tensor = lambda x: x.transpose((2, 0, 1)).astype(np.float32)
+
+        # choose length (you can scale this)
+        self.num = len(self.sample_dirs) * max(1, cfg.DATASET.VIDEOS_PER_EPOCH if hasattr(cfg.DATASET, 'VIDEOS_PER_EPOCH') else 1)
+
+        logger.info("TrkDataset: found %d samples under %s", len(self.sample_dirs), self.samples_root)
 
     def __len__(self):
         return self.num
 
-    def __getitem__(self, index):
-        index = self.pick[index]
-        dataset, index = self._find_dataset(index)
+    def _load_templates(self, sample_dir):
+        img_dir = os.path.join(sample_dir, 'object_images')
+        img_paths = sorted(glob(os.path.join(img_dir, '*.*')))[:self.num_templates]
+        imgs = []
+        for p in img_paths:
+            img = cv2.imread(p)
+            if img is None:
+                raise RuntimeError("Cannot read template image: %s" % p)
+            imgs.append(img)
+        # if less than num_templates, replicate last
+        while len(imgs) < self.num_templates:
+            imgs.append(imgs[-1].copy())
+        return imgs  # list of numpy BGR images
 
-        gray = cfg.DATASET.GRAY and cfg.DATASET.GRAY > np.random.random()
-        neg = cfg.DATASET.NEG and cfg.DATASET.NEG > np.random.random()
+    def _sample_frame_from_video(self, video_path, ann_bboxes=None):
+        """
+        Return (frame_idx, frame_image, bbox) where bbox is [x1,y1,x2,y2] if available else None.
+        If ann_bboxes provided (dict mapping frame -> bbox), sample one annotated frame.
+        Otherwise pick a random frame (and bbox=None).
+        """
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError("Cannot open video: %s" % video_path)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
-        # get one dataset
-        if neg:
-            template = dataset.get_random_target(index)
-            search = np.random.choice(self.all_dataset).get_random_target()
+        if ann_bboxes:
+            # pick a random annotated frame from ann_bboxes keys (strings)
+            frame_keys = [int(k) for k in ann_bboxes.keys()]
+            if len(frame_keys) == 0:
+                # fallback to random
+                fidx = np.random.randint(0, max(1, frame_count))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
+                ret, frame = cap.read()
+                cap.release()
+                return fidx, frame, None
+            fidx = np.random.choice(frame_keys)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx - 1)  # annotations often 1-indexed; adjust if needed
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                return None, None, None
+            bbox = ann_bboxes.get(str(fidx)) or ann_bboxes.get("{:d}".format(fidx))
+            return fidx, frame, bbox
         else:
-            template, search = dataset.get_positive_pair(index)
+            # random frame
+            fidx = np.random.randint(0, max(1, frame_count))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                return None, None, None
+            return fidx, frame, None
 
-        # get image
-        template_image = cv2.imread(template[0])
-        search_image = cv2.imread(search[0])
+    def __getitem__(self, index):
+        """
+        Returns:
+            {
+                'templates': tensor [N, C, H, W],
+                'search': tensor [C, Hs, Ws],
+                'label_cls': cls_targets,
+                'label_loc': loc_targets,
+                'label_loc_weight': loc_weight,
+                'bbox': np.array([x1,y1,x2,y2])
+            }
+        """
+        # pick a sample folder randomly
+        sample_dir = self.sample_dirs[np.random.randint(0, len(self.sample_dirs))]
+        sample_name = os.path.basename(sample_dir)
 
-        # get bounding box
-        template_box = self._get_bbox(template_image, template[1])
-        search_box = self._get_bbox(search_image, search[1])
+        # load templates
+        templates_np = self._load_templates(sample_dir)  # list of BGR numpy images
 
-        # augmentation
-        template, _ = self.template_aug(template_image,
-                                        template_box,
-                                        cfg.TRAIN.EXEMPLAR_SIZE,
-                                        gray=gray)
+        # load annotated bboxes for this video if present
+        ann_for_video = None
+        # annotations in challenge may use video ids same as folder names
+        if sample_name in self.annotations:
+            ann_for_video = self.annotations[sample_name][0] if isinstance(self.annotations[sample_name], list) else self.annotations[sample_name]
 
-        search, bbox = self.search_aug(search_image,
-                                       search_box,
-                                       cfg.TRAIN.SEARCH_SIZE,
-                                       gray=gray)
+        # sample a search frame and bbox (if exists)
+        video_path = os.path.join(sample_dir, 'drone_video.mp4')
+        frame_idx, search_frame, ann_bbox = self._sample_frame_from_video(video_path, ann_for_video)
 
-        # get labels
-        cls, delta, delta_weight, overlap = self.anchor_target(
-                bbox, cfg.TRAIN.OUTPUT_SIZE, neg)
-        template = template.transpose((2, 0, 1)).astype(np.float32)
-        search = search.transpose((2, 0, 1)).astype(np.float32)
+        if search_frame is None:
+            # fallback: return simple zeroed tensors to avoid crash
+            template_t = np.stack([self.to_tensor(cv2.cvtColor(t, cv2.COLOR_BGR2RGB)) for t in templates_np], axis=0)
+            search_t = np.zeros((3, cfg.TRAIN.SEARCH_SIZE, cfg.TRAIN.SEARCH_SIZE), dtype=np.float32)
+            label_cls = np.zeros((1,))
+            label_loc = np.zeros((1, 4))
+            label_loc_weight = np.zeros((1, 4))
+            return {
+                'templates': template_t,
+                'search': search_t,
+                'label_cls': label_cls,
+                'label_loc': label_loc,
+                'label_loc_weight': label_loc_weight,
+                'bbox': np.array([0,0,0,0])
+            }
+
+        # compute exemplar and search crops using the same helper _get_bbox & augmentation from original code
+        # For template, we will use given object_images as templates (apply template_aug on template crops)
+        # We'll compute template_box based on ann_bbox if available otherwise center crop
+
+        # Determine template box relative to template image: here assume template images show object roughly centered
+        templates_proc = []
+        for timg in templates_np:
+            # convert BGR->RGB then augmentation (using existing augmentation expects image and bbox)
+            im = timg
+            # Make a default bbox covering center area (if no annotation for template image)
+            h, w = im.shape[:2]
+            # default bbox: center 50% area
+            cx, cy = w//2, h//2
+            bw, bh = int(w*0.5), int(h*0.5)
+            center_box = center2corner(Center(cx, cy, bw, bh))
+            tpl_crop, _ = self.template_aug(im, center_box, cfg.TRAIN.EXEMPLAR_SIZE, gray=False)
+            tpl_crop = self.to_tensor(cv2.cvtColor(tpl_crop, cv2.COLOR_BGR2RGB))
+            templates_proc.append(tpl_crop)
+
+        templates_t = np.stack(templates_proc, axis=0)  # [N, C, H, W]
+
+        # For search image, use ann_bbox to produce a bbox; otherwise center bbox
+        if ann_bbox is not None:
+            # ann_bbox may be [x1,y1,x2,y2] or similar; convert to center form expected by _get_bbox
+            # Here we pass ann_bbox directly to helper _get_bbox by creating a temporary image
+            search_image = search_frame
+            # compute search box in same style as original _get_bbox: we reuse that helper
+            search_box = self._compute_search_box_from_ann(search_image, ann_bbox)
+        else:
+            # use center bbox as no ann available
+            h, w = search_frame.shape[:2]
+            cx, cy = w//2, h//2
+            bw, bh = int(w*0.2), int(h*0.2)
+            search_box = center2corner(Center(cx, cy, bw, bh))
+
+        # Apply augmentation to search patch
+        search_crop, bbox = self.search_aug(search_frame, search_box, cfg.TRAIN.SEARCH_SIZE, gray=False)
+        search_t = self.to_tensor(cv2.cvtColor(search_crop, cv2.COLOR_BGR2RGB))
+
+        # Compute labels using anchor_target (if we have bbox)
+        # anchor_target expects bbox in [cx, cy, w, h] normalized to search patch.
+        # We'll pass bbox returned by augmentation (already in format used by original code).
+        cls, delta, delta_weight, overlap = self.anchor_target(bbox, cfg.TRAIN.OUTPUT_SIZE, neg=False)
+
         return {
-                'template': template,
-                'search': search,
-                'label_cls': cls,
-                'label_loc': delta,
-                'label_loc_weight': delta_weight,
-                'bbox': np.array(bbox)
-                }
+            'templates': templates_t,        # numpy array [N, C, H, W] float32
+            'search': search_t,              # numpy array [C, Hs, Ws] float32
+            'label_cls': cls,
+            'label_loc': delta,
+            'label_loc_weight': delta_weight,
+            'bbox': np.array(bbox)
+        }
+
+    # helper: convert annotation bbox to the format expected by _get_bbox logic
+    def _compute_search_box_from_ann(self, image, ann_bbox):
+        """
+        ann_bbox may be [x1,y1,x2,y2] or [x,y,w,h] depending on annotations.
+        We convert it to center2corner(Center(cx,cy,w,h)) consistent with _get_bbox output.
+        """
+        try:
+            b = ann_bbox
+            if isinstance(b, dict):
+                # if stored as dict with keys, try to parse
+                b = list(b.values())
+            b = list(map(float, b))
+            if len(b) == 4:
+                x1, y1, x2, y2 = b
+                w = x2 - x1
+                h = y2 - y1
+                cx = x1 + w/2.0
+                cy = y1 + h/2.0
+            elif len(b) == 2:
+                w, h = b
+                h_img, w_img = image.shape[:2]
+                cx, cy = w_img/2.0, h_img/2.0
+            else:
+                # fallback center small box
+                h_img, w_img = image.shape[:2]
+                cx, cy = w_img/2.0, h_img/2.0
+                w, h = w_img*0.2, h_img*0.2
+        except Exception:
+            h_img, w_img = image.shape[:2]
+            cx, cy = w_img/2.0, h_img/2.0
+            w, h = w_img*0.2, h_img*0.2
+
+        return center2corner(Center(int(cx), int(cy), int(w), int(h)))

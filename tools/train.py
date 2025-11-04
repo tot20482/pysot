@@ -7,9 +7,6 @@ from __future__ import unicode_literals
 
 import argparse
 import logging
-from detect import InitialDetector
-import cv2
-from glob import glob
 import os
 import time
 import math
@@ -56,7 +53,7 @@ def seed_torch(seed=0):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-# fined data loader
+
 def build_data_loader():
     logger.info("build train dataset")
     # train_dataset
@@ -314,68 +311,7 @@ def main():
     # start training
     train(train_loader, dist_model, optimizer, lr_scheduler, tb_writer)
 
-def detect_and_track():
-    base_dir = "/kaggle/input/zaloai2025-aeroeyes/observing/train"
-    sample_name = "Backpack_0"
-    sample_dir = os.path.join(base_dir, "samples", sample_name)
-    video_path = os.path.join(sample_dir, "drone_video.mp4")
-    object_imgs = sorted(glob(os.path.join(sample_dir, "object_images/*.jpg")))
-    ref_imgs = [cv2.imread(p) for p in object_imgs]
-
-    print(f"[INFO] Loaded sample: {sample_name}")
-    print(f"Video path: {video_path}")
-    print(f"Loaded {len(ref_imgs)} reference images")
-
-    # === Bước 1: Detect khung đầu tiên ===
-    detector = InitialDetector(device='cuda')
-    first_frame_idx, init_bbox = detector.detect_first_bbox(video_path, ref_imgs)
-    print(f"First frame: {first_frame_idx}, init box: {init_bbox}")
-
-    # === Bước 2: Load tracker (PySOT) ===
-    from pysot.core.config import cfg
-    from pysot.tracker.tracker_builder import build_tracker
-    from pysot.models.model_builder import ModelBuilder
-
-    cfg.merge_from_file("/kaggle/working/pysot/experiments/siamrpn_mobilev2_l234_dwxcorr/config.yaml")
-    model = ModelBuilder().cuda().eval()
-    tracker = build_tracker(model)
-
-    # đọc lại video đến frame đầu tiên
-    cap = cv2.VideoCapture(video_path)
-    for i in range(first_frame_idx):
-        ret, frame = cap.read()
-    tracker.init(frame, init_bbox)
-
-    # === Bước 3: Track các frame tiếp theo ===
-    results = []
-    frame_idx = first_frame_idx
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        outputs = tracker.track(frame)
-        bbox = outputs['bbox']
-        results.append({
-            "frame": frame_idx,
-            "x1": float(bbox[0]), "y1": float(bbox[1]),
-            "x2": float(bbox[0]+bbox[2]), "y2": float(bbox[1]+bbox[3])
-        })
-        frame_idx += 1
-    cap.release()
-
-    # === Bước 4: Xuất JSON ===
-    submission = [{
-        "video_id": sample_name,
-        "detections": [{"bboxes": results}]
-    }]
-
-    out_path = "/kaggle/working/submission.json"
-    with open(out_path, "w") as f:
-        json.dump(submission, f, indent=4)
-
-    print(f"[INFO] Submission saved to {out_path}")
-
 
 if __name__ == '__main__':
-    from train import detect_and_track
-    detect_and_track()
+    seed_torch(args.seed)
+    main()
