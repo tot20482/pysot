@@ -278,7 +278,11 @@ def main():
     if cfg.BACKBONE.PRETRAINED:
         cur_path = os.path.dirname(os.path.realpath(__file__))
         backbone_path = os.path.join(cur_path, '../', cfg.BACKBONE.PRETRAINED)
-        load_pretrain(model.backbone, backbone_path)
+        if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
+            load_pretrain(model.backbone, backbone_path)
+        else:
+            raise FileNotFoundError(f"Pretrained model not found or empty: {backbone_path}")
+
 
     # create tensorboard writer
     if rank == 0 and cfg.TRAIN.LOG_DIR:
