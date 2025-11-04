@@ -277,7 +277,9 @@ def main():
     # load pretrained backbone weights
     if cfg.BACKBONE.PRETRAINED:
         cur_path = os.path.dirname(os.path.realpath(__file__))
-        backbone_path = os.path.join(cur_path, '../', cfg.BACKBONE.PRETRAINED)
+        if cfg.BACKBONE.PRETRAINED:
+    # Nếu bạn biết chính xác đường dẫn tuyệt đối đến model
+            backbone_path = "/kaggle/working/pysot/pretrained_models/resnet50.model"  # chỉnh theo vị trí thực tế
         if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
             load_pretrain(model.backbone, backbone_path)
         else:
