@@ -9,7 +9,7 @@ import json
 import logging
 import sys
 import os
-import glob
+from glob import glob
 
 import cv2
 import numpy as np
