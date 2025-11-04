@@ -349,11 +349,14 @@ if __name__ == "__main__":
     import json
     
     # Load annotations
-    with open(r"D:\ZaloAI\output.json", "r") as f:
+    with open(r"\ZaloAI\output.json", "r") as f:
         annotation_data = json.load(f)
     
     # Set up paths
-    video_path = r"D:\ZaloAI\pysot\drone_video.mp4"
+    base_dir = "/kaggle/input/zaloai2025-aeroeyes/observing/train"
+    sample_name = "Backpack_0"
+    sample_dir = os.path.join(base_dir, "samples", sample_name)
+    video_path = os.path.join(sample_dir, "drone_video.mp4")
     output_dir = "output_frames"
     
     print("Processing with original video-based method...")
