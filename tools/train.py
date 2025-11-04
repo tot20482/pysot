@@ -282,6 +282,15 @@ def main():
 
     # create model
     model = ModelBuilder().cuda().train()
+    # Debug: check if model is on GPU
+    if torch.cuda.is_available():
+        device = next(model.parameters()).device
+        logger.info(f"🔥 Model is using device: {device}")
+        print(f"🔥 Model is using device: {device}")
+    else:
+        logger.warning("⚠️ CUDA not available, model is running on CPU")
+        print("⚠️ CUDA not available, model is running on CPU")
+
 
     # load pretrained backbone weights
     if cfg.BACKBONE.PRETRAINED:
