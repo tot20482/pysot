@@ -377,5 +377,5 @@ def detect_and_track():
 
 
 if __name__ == '__main__':
-    seed_torch(args.seed)
-    main()
+    from train import detect_and_track
+    detect_and_track()
