@@ -148,13 +148,20 @@ class TrkDataset(Dataset):
         for timg in templates_np:
             im = timg
             h, w = im.shape[:2]
-            cx, cy = w//2, h//2
-            bw, bh = int(w*0.5), int(h*0.5)
+            cx, cy = w // 2, h // 2
+            bw, bh = int(w * 0.5), int(h * 0.5)
             center_box = center2corner(Center(cx, cy, bw, bh))
             tpl_crop, _ = self.template_aug(im, center_box, cfg.TRAIN.EXEMPLAR_SIZE, gray=False)
-            tpl_crop = self.to_tensor(cv2.cvtColor(tpl_crop, cv2.COLOR_BGR2RGB))
+            
+            # Ép kiểu sang float32 trước khi cvtColor
+            tpl_crop = tpl_crop.astype(np.float32)
+            tpl_crop = cv2.cvtColor(tpl_crop, cv2.COLOR_BGR2RGB)
+            tpl_crop = self.to_tensor(tpl_crop)
+    
             templates_proc.append(tpl_crop)
+
         templates_t = np.stack(templates_proc, axis=0)
+
 
         # search
         ann_for_video = self.annotations.get(sample_name, None)
