@@ -35,7 +35,7 @@ class Augmentation:
         c = -a * bbox[0]
         d = -b * bbox[1]
         mapping = np.array([[a, 0, c],
-                            [0, b, d]]).astype(np.float)
+                            [0, b, d]]).astype(float)
         crop = cv2.warpAffine(image, mapping, (out_sz, out_sz),
                               borderMode=cv2.BORDER_CONSTANT,
                               borderValue=padding)
