@@ -279,7 +279,7 @@ def main():
         cur_path = os.path.dirname(os.path.realpath(__file__))
         if cfg.BACKBONE.PRETRAINED:
     # Nếu bạn biết chính xác đường dẫn tuyệt đối đến model
-            backbone_path = "/kaggle/working/pysot/pretrained_models/resnet50.model"  # chỉnh theo vị trí thực tế
+            backbone_path = "/kaggle/working/pysot/experiments/siamrpn_r50_l234_dwxcorr_8gpu/config.yaml"  # chỉnh theo vị trí thực tế
         if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
             load_pretrain(model.backbone, backbone_path)
         else:
