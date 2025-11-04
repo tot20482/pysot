@@ -179,10 +179,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
     logger.info("model\n{}".format(describe(model.module)))
     end = time.time()
-
-    # Single outer loop over train_loader (NO nested loop)
     for idx, data in enumerate(train_loader):
-        # update epoch if necessary
         if epoch != idx // num_per_epoch + start_epoch:
             epoch = idx // num_per_epoch + start_epoch
 
@@ -207,45 +204,18 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
         tb_idx = idx
         if idx % num_per_epoch == 0 and idx != 0:
-            for pg_idx, pg in enumerate(optimizer.param_groups):
+            for idx, pg in enumerate(optimizer.param_groups):
                 logger.info('epoch {} lr {}'.format(epoch+1, pg['lr']))
                 if rank == 0:
-                    tb_writer.add_scalar('lr/group{}'.format(pg_idx+1),
+                    tb_writer.add_scalar('lr/group{}'.format(idx+1),
                                          pg['lr'], tb_idx)
 
         data_time = average_reduce(time.time() - end)
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        # ---- MOVE BATCH TO GPU (safe) ----
-        # Only move torch.Tensors to CUDA; keep other fields as-is.
-        # Use non_blocking for pinned memory.
-        for k, v in list(data.items()):
-            if isinstance(v, torch.Tensor):
-                try:
-                    data[k] = v.cuda(non_blocking=True)
-                except Exception as e:
-                    logger.warning(f"Failed to cuda() field {k}: {e}")
-                    # leave as-is (will likely error later) but continue
-
-        # ---- Forward ----
-        try:
-            outputs = model(data)
-        except RuntimeError as e:
-            # Helpful debug message for device-side asserts
-            logger.error("RuntimeError during model forward: {}".format(e))
-            logger.error("Suggestion: set CUDA_LAUNCH_BLOCKING=1 to get accurate traceback.")
-            # Try to print some useful diagnostics about data
-            try:
-                for k, v in data.items():
-                    if isinstance(v, torch.Tensor):
-                        logger.error(f"data[{k}] dtype={v.dtype} shape={v.shape} min={v.min().item()} max={v.max().item()}")
-                    else:
-                        logger.error(f"data[{k}] type={type(v)}")
-            except Exception:
-                logger.exception("Failed to log data diagnostics.")
-            raise
-
+        data = {k: v.cuda(non_blocking=True) for k, v in data.items()}
+        outputs = model(data)
         loss = outputs['total_loss']
 
         if is_valid_number(loss.data.item()):
@@ -291,6 +261,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
         end = time.time()
 
 
+
 def main():
     rank, world_size = dist_init()
     logger.info("init done")
@@ -317,7 +288,7 @@ def main():
         cur_path = os.path.dirname(os.path.realpath(__file__))
         if cfg.BACKBONE.PRETRAINED:
     # Nếu bạn biết chính xác đường dẫn tuyệt đối đến model
-            backbone_path = "/kaggle/input/alexnet/model.pth"  # chỉnh theo vị trí thực tế
+            backbone_path = "/kaggle/input/mobilenetv2/model.pth"  # chỉnh theo vị trí thực tế
         if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
             load_pretrain(model.backbone, backbone_path)
         else:
