@@ -214,7 +214,15 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        outputs = model(data)
+        for idx, data in enumerate(train_loader):
+
+            # ✅ chuyển toàn bộ tensor trong dict sang GPU
+            for k, v in data.items():
+                if isinstance(v, torch.Tensor):
+                    data[k] = v.cuda(non_blocking=True)
+
+            outputs = model(data)
+            
         loss = outputs['total_loss']
 
         if is_valid_number(loss.data.item()):
@@ -287,7 +295,7 @@ def main():
         cur_path = os.path.dirname(os.path.realpath(__file__))
         if cfg.BACKBONE.PRETRAINED:
     # Nếu bạn biết chính xác đường dẫn tuyệt đối đến model
-            backbone_path = "/kaggle/input/mobilenetv2/model.pth"  # chỉnh theo vị trí thực tế
+            backbone_path = "/kaggle/input/alexnet/model.pth"  # chỉnh theo vị trí thực tế
         if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
             load_pretrain(model.backbone, backbone_path)
         else:
