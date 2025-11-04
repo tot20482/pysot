@@ -11,7 +11,7 @@ PySOT has enabled research projects, including: [SiamRPN](http://openaccess.the
 
 ## Introduction
 
-The goal of PySOT is to provide a high-quality, high-performance codebase for visual tracking *research*. It is designed to be flexible in order to support rapid implementation and evaluation of novel research. PySOT includes implementations of the following visual tracking algorithms:
+The goal of PySOT is to provide a high-quality, high-performance codebase for visual tracking _research_. It is designed to be flexible in order to support rapid implementation and evaluation of novel research. PySOT includes implementations of the following visual tracking algorithms:
 
 - [SiamMask](https://arxiv.org/abs/1812.05050)
 - [SiamRPN++](https://arxiv.org/abs/1812.11703)
@@ -29,10 +29,10 @@ Additional backbone architectures may be easily implemented. For more details ab
 
 Evaluation toolkit can support the following datasets:
 
-:paperclip: [OTB2015](http://faculty.ucmerced.edu/mhyang/papers/pami15_tracking_benchmark.pdf) 
-:paperclip: [VOT16/18/19](http://votchallenge.net) 
-:paperclip: [VOT18-LT](http://votchallenge.net/vot2018/index.html) 
-:paperclip: [LaSOT](https://arxiv.org/pdf/1809.07845.pdf) 
+:paperclip: [OTB2015](http://faculty.ucmerced.edu/mhyang/papers/pami15_tracking_benchmark.pdf)
+:paperclip: [VOT16/18/19](http://votchallenge.net)
+:paperclip: [VOT18-LT](http://votchallenge.net/vot2018/index.html)
+:paperclip: [LaSOT](https://arxiv.org/pdf/1809.07845.pdf)
 :paperclip: [UAV123](https://arxiv.org/pdf/1804.00518.pdf)
 
 ## Model Zoo and Baselines
@@ -46,25 +46,30 @@ Please find installation instructions for PyTorch and PySOT in [`INSTALL.md`](IN
 ## Quick Start: Using PySOT
 
 ### Add PySOT to your PYTHONPATH
+
 ```bash
 export PYTHONPATH=/path/to/pysot:$PYTHONPATH
 ```
 
 ### Download models
+
 Download models in [PySOT Model Zoo](MODEL_ZOO.md) and put the model.pth in the correct directory in experiments
 
 ### Webcam demo
+
 ```bash
-python tools/demo.py \
+python /tools/demo.py \
     --config experiments/siamrpn_r50_l234_dwxcorr/config.yaml \
     --snapshot experiments/siamrpn_r50_l234_dwxcorr/model.pth
     # --video demo/bag.avi # (in case you don't have webcam)
 ```
 
 ### Download testing datasets
-Download datasets and put them into `testing_dataset` directory. Jsons of commonly used datasets can be downloaded from [Google Drive](https://drive.google.com/drive/folders/10cfXjwQQBQeu48XMf2xc_W1LucpistPI) or [BaiduYun](https://pan.baidu.com/s/1js0Qhykqqur7_lNRtle1tA#list/path=%2F). If you want to test tracker on new dataset, please refer to [pysot-toolkit](https://github.com/StrangerZhang/pysot-toolkit) to setting `testing_dataset`. 
+
+Download datasets and put them into `testing_dataset` directory. Jsons of commonly used datasets can be downloaded from [Google Drive](https://drive.google.com/drive/folders/10cfXjwQQBQeu48XMf2xc_W1LucpistPI) or [BaiduYun](https://pan.baidu.com/s/1js0Qhykqqur7_lNRtle1tA#list/path=%2F). If you want to test tracker on new dataset, please refer to [pysot-toolkit](https://github.com/StrangerZhang/pysot-toolkit) to setting `testing_dataset`.
 
 ### Test tracker
+
 ```bash
 cd experiments/siamrpn_r50_l234_dwxcorr
 python -u ../../tools/test.py 	\
@@ -72,11 +77,14 @@ python -u ../../tools/test.py 	\
 	--dataset VOT2018 	\ # dataset name
 	--config config.yaml	  # config file
 ```
+
 The testing results will in the current directory(results/dataset/model_name/)
 
 ### Eval tracker
+
 assume still in experiments/siamrpn_r50_l234_dwxcorr_8gpu
-``` bash
+
+```bash
 python ../../tools/eval.py 	 \
 	--tracker_path ./results \ # result path
 	--dataset VOT2018        \ # dataset name
@@ -84,11 +92,12 @@ python ../../tools/eval.py 	 \
 	--tracker_prefix 'model'   # tracker_name
 ```
 
-###  Training :wrench:
+### Training :wrench:
+
 See [TRAIN.md](TRAIN.md) for detailed instruction.
 
-
 ### Getting Help :hammer:
+
 If you meet problem, try searching our GitHub issues first. We intend the issues page to be a forum in which the community collectively troubleshoots problems. But please do **not** post **duplicate** issues. If you have similar issue that has been closed, you can reopen it.
 
 - `ModuleNotFoundError: No module named 'pysot'`
@@ -98,7 +107,6 @@ If you meet problem, try searching our GitHub issues first. We intend the issues
 - `ImportError: cannot import name region`
 
 :dart:Solution: Build `region` by `python setup.py build_ext —-inplace` as decribled in [INSTALL.md](INSTALL.md).
-
 
 ## References
 
@@ -121,7 +129,7 @@ If you meet problem, try searching our GitHub issues first. We intend the issues
 - [Fully-Convolutional Siamese Networks for Object Tracking](https://arxiv.org/abs/1606.09549).
   Luca Bertinetto, Jack Valmadre, João F. Henriques, Andrea Vedaldi, Philip H. S. Torr.
   The European Conference on Computer Vision (ECCV) Workshops, 2016.
-  
+
 ## Contributors
 
 - [Fangyi Zhang](https://github.com/StrangerZhang)
@@ -132,4 +140,4 @@ If you meet problem, try searching our GitHub issues first. We intend the issues
 
 ## License
 
-PySOT is released under the [Apache 2.0 license](https://github.com/STVIR/pysot/blob/master/LICENSE). 
+PySOT is released under the [Apache 2.0 license](https://github.com/STVIR/pysot/blob/master/LICENSE).
