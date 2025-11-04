@@ -336,7 +336,7 @@ def detect_and_track():
     from pysot.tracker.tracker_builder import build_tracker
     from pysot.models.model_builder import ModelBuilder
 
-    cfg.merge_from_file("/kaggle/working/experiments/siamrpn_r50_l234/config.yaml")
+    cfg.merge_from_file("/kaggle/working/pysot/experiments/siamrpn_mobilev2_l234_dwxcorr/config.yaml")
     model = ModelBuilder().cuda().eval()
     tracker = build_tracker(model)
 
