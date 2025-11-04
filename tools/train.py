@@ -179,7 +179,10 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
     logger.info("model\n{}".format(describe(model.module)))
     end = time.time()
+
+    # Single outer loop over train_loader (NO nested loop)
     for idx, data in enumerate(train_loader):
+        # update epoch if necessary
         if epoch != idx // num_per_epoch + start_epoch:
             epoch = idx // num_per_epoch + start_epoch
 
@@ -204,25 +207,45 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
         tb_idx = idx
         if idx % num_per_epoch == 0 and idx != 0:
-            for idx, pg in enumerate(optimizer.param_groups):
+            for pg_idx, pg in enumerate(optimizer.param_groups):
                 logger.info('epoch {} lr {}'.format(epoch+1, pg['lr']))
                 if rank == 0:
-                    tb_writer.add_scalar('lr/group{}'.format(idx+1),
+                    tb_writer.add_scalar('lr/group{}'.format(pg_idx+1),
                                          pg['lr'], tb_idx)
 
         data_time = average_reduce(time.time() - end)
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        for idx, data in enumerate(train_loader):
-
-            # ✅ chuyển toàn bộ tensor trong dict sang GPU
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
+        # ---- MOVE BATCH TO GPU (safe) ----
+        # Only move torch.Tensors to CUDA; keep other fields as-is.
+        # Use non_blocking for pinned memory.
+        for k, v in list(data.items()):
+            if isinstance(v, torch.Tensor):
+                try:
                     data[k] = v.cuda(non_blocking=True)
+                except Exception as e:
+                    logger.warning(f"Failed to cuda() field {k}: {e}")
+                    # leave as-is (will likely error later) but continue
 
+        # ---- Forward ----
+        try:
             outputs = model(data)
-            
+        except RuntimeError as e:
+            # Helpful debug message for device-side asserts
+            logger.error("RuntimeError during model forward: {}".format(e))
+            logger.error("Suggestion: set CUDA_LAUNCH_BLOCKING=1 to get accurate traceback.")
+            # Try to print some useful diagnostics about data
+            try:
+                for k, v in data.items():
+                    if isinstance(v, torch.Tensor):
+                        logger.error(f"data[{k}] dtype={v.dtype} shape={v.shape} min={v.min().item()} max={v.max().item()}")
+                    else:
+                        logger.error(f"data[{k}] type={type(v)}")
+            except Exception:
+                logger.exception("Failed to log data diagnostics.")
+            raise
+
         loss = outputs['total_loss']
 
         if is_valid_number(loss.data.item()):
@@ -266,7 +289,6 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                             average_meter.batch_time.avg,
                             cfg.TRAIN.EPOCH * num_per_epoch)
         end = time.time()
-
 
 
 def main():
