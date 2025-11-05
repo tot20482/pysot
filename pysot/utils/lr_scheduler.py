@@ -20,7 +20,9 @@ class LRScheduler(_LRScheduler):
         super(LRScheduler, self).__init__(optimizer, last_epoch)
 
     def get_cur_lr(self):
-        return self.lr_spaces[self.last_epoch]
+        idx = min(self.last_epoch, len(self.lr_spaces) - 1)
+        return self.lr_spaces[idx]
+
 
     def get_lr(self):
         epoch = min(self.last_epoch, len(self.lr_spaces) - 1)
