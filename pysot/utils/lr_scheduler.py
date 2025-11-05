@@ -134,8 +134,13 @@ LRs = {
 
 
 def _build_lr_scheduler(optimizer, config, epochs=50, last_epoch=-1):
+    # copy kwargs để không sửa trực tiếp config
+    kwargs = dict(config.KWARGS)  
+    # loại bỏ epochs nếu có trong kwargs để tránh trùng lặp
+    kwargs.pop('epochs', None)  
     return LRs[config.TYPE](optimizer, last_epoch=last_epoch,
-                            epochs=epochs, **config.KWARGS)
+                            epochs=epochs, **kwargs)
+
 
 
 def _build_warm_up_scheduler(optimizer, epochs=50, last_epoch=-1):
