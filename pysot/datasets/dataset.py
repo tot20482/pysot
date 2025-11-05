@@ -228,3 +228,25 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
             logger.info(f"Saved {i}/{max_samples} samples...")
 
     logger.info("✅ Done saving processed dataset!")
+
+
+def main():
+    """
+    Main function to initialize config, dataset, and save processed data
+    """
+    cfg.merge_from_file("pysot/experiments/siamrpn_alexnet/config.yaml")
+    cfg.freeze()
+
+    dataset = TrkDataset(
+        samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples"
+    )
+
+    save_processed_dataset(
+        dataset,
+        save_dir="/kaggle/working/processed_dataset",
+        max_samples=500  # tùy vào dung lượng
+    )
+
+
+if __name__ == "__main__":
+    main()
