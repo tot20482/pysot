@@ -231,22 +231,16 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
 
 
 def main():
-    """
-    Main function to initialize config, dataset, and save processed data
-    """
-    cfg.merge_from_file("\experiments\siamrpn_alex_dwxcorr_otb\config.yaml")
+    # Load config file
+    config_path = "/kaggle/working/pysot/experiments/siamrpn_alex_dwxcorr_otb/config.yaml"
+    cfg.merge_from_file(config_path)
     cfg.freeze()
-
-    dataset = TrkDataset(
-        samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples"
-    )
-
-    save_processed_dataset(
-        dataset,
-        save_dir="/kaggle/working/processed_dataset",
-        max_samples=500  # tùy vào dung lượng
-    )
-
+    
+    # Initialize dataset
+    dataset = TrkDataset(samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples")
+    
+    # Save processed dataset
+    save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset", max_samples=1000)
 
 if __name__ == "__main__":
     main()
