@@ -13,6 +13,7 @@ import math
 import json
 import random
 import numpy as np
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -181,10 +182,12 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
     # logger.info("model\n{}".format(describe(model.module)))
 
     end = time.time()
-    for idx, data in enumerate(train_loader):
-        # 👉 Chuyển tất cả tensors trong data sang GPU
+    pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}", ncols=100)
+    for idx, data in pbar:
+        # 🚀 Move all tensors to GPU
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
 
+        # Update epoch if needed
         if epoch != idx // num_per_epoch + start_epoch:
             epoch = idx // num_per_epoch + start_epoch
 
@@ -199,42 +202,32 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                 )
 
             if epoch >= cfg.TRAIN.EPOCH:
+                pbar.close()
                 return
 
             if cfg.BACKBONE.TRAIN_EPOCH == epoch:
-                logger.info('start training backbone.')
+                logger.info('Start training backbone.')
                 optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
-                # logger.info("model\n{}".format(describe(model.module)))
 
-            # Chặn vượt quá số lr_spaces
+            # ✅ Safe scheduler stepping
             if hasattr(lr_scheduler, "cur_epoch") and lr_scheduler.cur_epoch + 1 < len(lr_scheduler.lr_spaces):
                 lr_scheduler.step()
             cur_lr = lr_scheduler.get_cur_lr()
-            logger.info('epoch: {}'.format(epoch + 1))
+            logger.info(f"Epoch: {epoch + 1}")
 
         tb_idx = idx
         if idx % num_per_epoch == 0 and idx != 0:
-            for idx, pg in enumerate(optimizer.param_groups):
-                logger.info('epoch {} lr {}'.format(epoch + 1, pg['lr']))
+            for i, pg in enumerate(optimizer.param_groups):
+                logger.info(f"Epoch {epoch + 1} lr {pg['lr']}")
                 if rank == 0:
-                    tb_writer.add_scalar('lr/group{}'.format(idx + 1), pg['lr'], tb_idx)
+                    tb_writer.add_scalar(f'lr/group{i + 1}', pg['lr'], tb_idx)
 
         data_time = average_reduce(time.time() - end)
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        # 👉 Forward trên GPU
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        for idx, data in enumerate(train_loader):
-            # 🚀 chuyển ALL tensors sang GPU
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
-                    data[k] = v.to(device, non_blocking=True)
-
-            # forward trên GPU
-            outputs = model(data)
-
+        # 🔁 Forward + loss
+        outputs = model(data)
         loss = outputs['total_loss']
 
         if is_valid_number(loss.item()):
@@ -249,13 +242,13 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             optimizer.step()
 
         batch_time = time.time() - end
-
         batch_info = {'batch_time': average_reduce(batch_time), 'data_time': average_reduce(data_time)}
         for k, v in sorted(outputs.items()):
             batch_info[k] = average_reduce(v.item())
 
         average_meter.update(**batch_info)
 
+        # 🧾 Logging to TensorBoard
         if rank == 0:
             for k, v in batch_info.items():
                 tb_writer.add_scalar(k, v, tb_idx)
@@ -266,9 +259,19 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                     info += f"\t{k}: {v:.4f}"
                     info += "\n" if cc % 2 == 1 else "\t"
                 logger.info(info)
-                print_speed(idx + 1 + start_epoch * num_per_epoch, average_meter.batch_time.avg, cfg.TRAIN.EPOCH * num_per_epoch)
+                print_speed(idx + 1 + start_epoch * num_per_epoch, average_meter.batch_time.avg,
+                            cfg.TRAIN.EPOCH * num_per_epoch)
+
+        # 🌀 Update tqdm progress bar text
+        pbar.set_postfix({
+            'loss': f"{loss.item():.4f}",
+            'lr': f"{cur_lr:.6f}",
+            'batch_time': f"{batch_time:.2f}s"
+        })
 
         end = time.time()
+
+    pbar.close()
 
 
 
