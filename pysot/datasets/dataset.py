@@ -13,6 +13,7 @@ from pysot.utils.bbox import center2corner, Center
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TrkDataset")
+logger = logging.getLogger("convert_annotations")
 
 class TrkDataset(Dataset):
     def __init__(self, samples_root=None, ann_path=None, num_templates=3, frame_step=1):
@@ -237,34 +238,66 @@ def convert_annotations(input_dir, output_file):
     """
     merged = {}
     ann_files = sorted(glob(os.path.join(input_dir, "*.json")))
+    logger.info(f"🔍 Found {len(ann_files)} annotation files in {input_dir}")
+
     if len(ann_files) == 0:
-        logger.error(f"No annotation files found in {input_dir}")
+        logger.error(f"❌ No annotation files found in {input_dir}")
         return None
     
     for file in ann_files:
+        logger.info(f"📄 Reading annotation file: {os.path.basename(file)}")
+
         with open(file, "r") as f:
             ann = json.load(f)
 
-        vid = ann.get("video_id")  # "Backpack_0"
+        # ✅ Fix: Nếu ann là list -> lấy phần tử đầu tiên
+        if isinstance(ann, list):
+            if len(ann) == 0:
+                logger.warning(f"⚠️ File {file} contains empty list, skipping")
+                continue
+            ann = ann[0]
+
+        if not isinstance(ann, dict):
+            logger.error(f"❌ Annotation format invalid in {file}. Expected dict, got {type(ann)}")
+            continue
+
+        vid = ann.get("video_id")
         if not vid:
-            logger.warning(f"File {file} missing video_id field, skipping")
+            logger.warning(f"⚠️ File {file} has no 'video_id', skipping")
             continue
         
         frames = {}
-        for block in ann.get("annotations", []):
+        bbox_blocks = ann.get("annotations", [])
+        if not bbox_blocks:
+            logger.warning(f"⚠️ File {file} has no 'annotations' list, skipping")
+            continue
+
+        for block in bbox_blocks:
             for bbox in block.get("bboxes", []):
                 frame = str(bbox["frame"])
-                frames[frame] = [bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]]
+                frames[frame] = [
+                    bbox["x1"],
+                    bbox["y1"],
+                    bbox["x2"],
+                    bbox["y2"]
+                ]
+
+        if len(frames) == 0:
+            logger.warning(f"⚠️ No bbox frames found for video {vid}, skipping")
+            continue
 
         merged[vid] = frames
-    
+        logger.info(f"✅ Processed {vid}: {len(frames)} frames")
+
+    # === Save output ===
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w") as f:
         json.dump(merged, f, indent=2)
 
-    logger.info(f"✅ Converted annotation saved to: {output_file}")
+    logger.info(f"🎯 Done! Converted annotation saved to: {output_file}")
     logger.info(f"📌 Total videos processed: {len(merged)}")
-    return output_file
 
+    return output_file
 
 
 def main():
