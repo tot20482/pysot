@@ -23,9 +23,10 @@ class LRScheduler(_LRScheduler):
         return self.lr_spaces[self.last_epoch]
 
     def get_lr(self):
-        epoch = self.last_epoch
+        epoch = min(self.last_epoch, len(self.lr_spaces) - 1)
         return [self.lr_spaces[epoch] * pg['initial_lr'] / self.start_lr
                 for pg in self.optimizer.param_groups]
+
 
     def __repr__(self):
         return "({}) lr spaces: \n{}".format(self.__class__.__name__,
