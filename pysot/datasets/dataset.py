@@ -234,20 +234,30 @@ def convert_annotations(input_file, output_file):
     """
     Convert ZaloAI annotation format into PySOT required format.
     input_file: một file JSON lớn chứa list video annotation
-    output_file: file json sau khi convert
+    output_file: file JSON sau khi convert
     """
     with open(input_file, "r") as f:
         data = json.load(f)
 
+    # Nếu data là dict đơn thì bọc lại thành list
+    if isinstance(data, dict):
+        logger.warning("Annotation JSON is a dict, wrapping it into list for processing")
+        data = [data]
+
+    if not isinstance(data, list):
+        raise ValueError(f"Annotation JSON must be a list of records, but got {type(data)}")
+
     merged = {}
     logger.info(f"🔍 Found {len(data)} annotation records in {input_file}")
 
-    for ann in data:
-        print(type(ann), ann)  # Debug
-        video_id = ann.get("video_id")  # Lỗi xảy ra tại đây
+    for idx, ann in enumerate(data):
+        if not isinstance(ann, dict):
+            logger.warning(f"⚠️ Entry {idx} is not a dict, skipping: {ann}")
+            continue
 
+        video_id = ann.get("video_id")
         if not video_id:
-            logger.warning(f"⚠️ Missing 'video_id' in entry, skipping")
+            logger.warning(f"⚠️ Missing 'video_id' in entry {idx}, skipping")
             continue
 
         frames = {}
@@ -256,7 +266,7 @@ def convert_annotations(input_file, output_file):
             logger.warning(f"⚠️ No 'annotations' found for video {video_id}, skipping")
             continue
 
-        # Duyệt qua từng khối annotations (thường chỉ có 1)
+        # Duyệt qua từng block annotations (thường chỉ có 1)
         for block in ann_list:
             for bbox in block.get("bboxes", []):
                 frame = str(bbox.get("frame", -1))
