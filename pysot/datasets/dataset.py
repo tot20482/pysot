@@ -232,68 +232,68 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
 
 def convert_annotations(input_file, output_file):
     """
-    Convert ZaloAI annotation format into PySOT required format.
-    input_file: một file JSON lớn chứa list video annotation
-    output_file: file JSON sau khi convert
+    Convert annotation JSON to PySOT required format:
+    Format cũ: {video_id: {frame: [x1,y1,x2,y2]}}
+    Format mới: [{"video_id":..., "annotations":[{"bboxes":[{"frame":..., "x1":..., ...}]}]}]
+    Kết quả luôn là: {video_id: {frame: [x1, y1, x2, y2]}}
     """
+    import json
+    import os
+    import logging
+
+    logger = logging.getLogger("convert_annotations")
+    logger.info(f"Loading annotation file: {input_file}")
+
     with open(input_file, "r") as f:
         data = json.load(f)
 
-    # Nếu data là dict đơn thì bọc lại thành list
-    if isinstance(data, dict):
-        logger.warning("Annotation JSON is a dict, wrapping it into list for processing")
-        data = [data]
-
-    if not isinstance(data, list):
-        raise ValueError(f"Annotation JSON must be a list of records, but got {type(data)}")
-
     merged = {}
-    logger.info(f"🔍 Found {len(data)} annotation records in {input_file}")
 
-    for idx, ann in enumerate(data):
-        if not isinstance(ann, dict):
-            logger.warning(f"⚠️ Entry {idx} is not a dict, skipping: {ann}")
-            continue
-
-        video_id = ann.get("video_id")
-        if not video_id:
-            logger.warning(f"⚠️ Missing 'video_id' in entry {idx}, skipping")
-            continue
-
-        frames = {}
-        ann_list = ann.get("annotations", [])
-        if not ann_list:
-            logger.warning(f"⚠️ No 'annotations' found for video {video_id}, skipping")
-            continue
-
-        # Duyệt qua từng block annotations (thường chỉ có 1)
-        for block in ann_list:
-            for bbox in block.get("bboxes", []):
-                frame = str(bbox.get("frame", -1))
-                if frame == "-1":
-                    logger.warning(f"⚠️ Invalid frame in video {video_id}, skipping bbox")
+    # Format cũ: dict video_id -> {frame -> bbox}
+    if isinstance(data, dict):
+        # Kiểm tra xem giá trị của key là dict frame->bbox hay là list block annotations
+        sample_value = next(iter(data.values()))
+        if isinstance(sample_value, dict) and all(isinstance(v, list) and len(v)==4 for v in sample_value.values()):
+            logger.info("Detected OLD annotation format (frame->bbox)")
+            merged = data  # Đã đúng format PySOT
+        else:
+            # Format mới
+            logger.info("Detected NEW annotation format (video_id + annotations)")
+            for ann in data if isinstance(data, list) else [data]:
+                video_id = ann.get("video_id")
+                if not video_id:
+                    logger.warning(f"⚠️ Missing 'video_id', skipping entry: {ann}")
                     continue
-                frames[frame] = [
-                    bbox.get("x1", 0),
-                    bbox.get("y1", 0),
-                    bbox.get("x2", 0),
-                    bbox.get("y2", 0)
-                ]
+                frames = {}
+                ann_list = ann.get("annotations", [])
+                for block in ann_list:
+                    for bbox in block.get("bboxes", []):
+                        frame = str(bbox.get("frame", -1))
+                        if frame == "-1":
+                            continue
+                        frames[frame] = [
+                            bbox.get("x1", 0),
+                            bbox.get("y1", 0),
+                            bbox.get("x2", 0),
+                            bbox.get("y2", 0)
+                        ]
+                if frames:
+                    merged[video_id] = frames
+    # Format list nhưng không có video_id? -> cảnh báo
+    elif isinstance(data, list):
+        logger.warning("⚠️ Annotation list format detected but missing 'video_id' keys")
+    else:
+        raise ValueError(f"Unsupported annotation format: {type(data)}")
 
-        if len(frames) == 0:
-            logger.warning(f"⚠️ No bbox frames found for video {video_id}, skipping")
-            continue
-
-        merged[video_id] = frames
-        logger.info(f"✅ Processed {video_id}: {len(frames)} frames")
-
+    # Lưu file kết quả
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w") as f:
         json.dump(merged, f, indent=2)
 
-    logger.info(f"🎯 Done! Converted annotation saved to: {output_file}")
-    logger.info(f"📌 Total valid videos processed: {len(merged)}")
+    logger.info(f"✅ Conversion done! Saved to: {output_file}")
+    logger.info(f"📌 Total videos processed: {len(merged)}")
     return output_file
+
 
 
 

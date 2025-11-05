@@ -58,10 +58,11 @@ def build_data_loader():
     logger.info("build train dataset")
     
     train_dataset = TrkDataset(
-        samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples",
-        ann_path="/kaggle/input/annotation/output.json"
+        samples_root="/kaggle/working/processed_dataset/samples",  # 👉 Thư mục chứa .npz sau xử lý
+        ann_path="/kaggle/working/processed_dataset/annotations.json"  # 👉 File chứa annotation chuẩn JSON
     )
     
+    logger.info(f"Number of samples in dataset: {len(train_dataset)}")
     logger.info("build dataset done")
 
     train_sampler = None
@@ -72,7 +73,8 @@ def build_data_loader():
         batch_size=cfg.TRAIN.BATCH_SIZE,
         num_workers=cfg.TRAIN.NUM_WORKERS,
         pin_memory=True,
-        sampler=train_sampler
+        sampler=train_sampler,
+        drop_last=True,  # ⚠️ tránh shape lỗi khi chia batch cuối cùng
     )
     return train_loader
 
