@@ -292,7 +292,7 @@ def main():
     cfg.freeze()
 
     # === ✅ STEP 1: Convert annotation format ===
-    ann_input_file = "/kaggle/input/zaloai2025-aeroeyes/observing/train/annotations/all_annotations.json"
+    ann_input_file = "/kaggle/input/annotation/output.json"
     ann_output_file = "/kaggle/working/processed_dataset/annotations/annotations.json"
     convert_annotations(ann_input_file, ann_output_file)
 
