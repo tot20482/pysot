@@ -10,35 +10,39 @@ from pysot.datasets.anchor_target import AnchorTarget
 from pysot.core.config import cfg
 from pysot.utils.bbox import center2corner, Center
 
-logger = logging.getLogger("global")
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("TrkDataset")
 
 class TrkDataset(Dataset):
     def __init__(self, samples_root=None, ann_path=None, num_templates=3, frame_step=1):
         super(TrkDataset, self).__init__()
-        
+
         if samples_root is None:
             samples_root = "/kaggle/input/zaloai2025-aeroeyes/observing/train/samples"
         self.samples_root = os.path.abspath(samples_root)
         self.num_templates = num_templates
         self.frame_step = frame_step
 
-        # load annotation
+        # Load annotation
         if ann_path is None:
             ann_path = os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
 
         if os.path.exists(ann_path):
             with open(ann_path, 'r') as f:
                 self.annotations = json.load(f)
+            logger.info(f"Loaded annotation file: {ann_path}")
         else:
-            logger.warning(f"Annotation file not found: {ann_path}, using empty dict")
+            logger.warning(f"Annotation file not found: {ann_path}, using empty annotation dict")
             self.annotations = {}
 
-        # danh sách folder sample
+        # Danh sách folder sample
         self.sample_dirs = sorted([d for d in glob(os.path.join(self.samples_root, '*')) if os.path.isdir(d)])
         if len(self.sample_dirs) == 0:
-            raise RuntimeError("No sample folders found in %s" % self.samples_root)
+            raise RuntimeError(f"No sample directories found in {self.samples_root}")
+        logger.info(f"Found {len(self.sample_dirs)} sample directories in {self.samples_root}")
 
-        # augmentation
+        # Augmentation
         self.template_aug = Augmentation(
             cfg.DATASET.TEMPLATE.SHIFT,
             cfg.DATASET.TEMPLATE.SCALE,
@@ -53,16 +57,17 @@ class TrkDataset(Dataset):
             cfg.DATASET.SEARCH.FLIP,
             cfg.DATASET.SEARCH.COLOR
         )
+        logger.info("Augmentation setup complete.")
 
-        # anchor target
+        # Anchor target
         self.anchor_target = AnchorTarget()
+        logger.info("AnchorTarget setup completed.")
 
-        # transform numpy -> tensor
         self.to_tensor = lambda x: x.transpose((2, 0, 1)).astype(np.float32)
 
-        # số lượng mẫu
+        # Số lượng mẫu
         self.num = len(self.sample_dirs) * max(1, getattr(cfg.DATASET, 'VIDEOS_PER_EPOCH', 1))
-        logger.info("TrkDataset: found %d samples under %s", len(self.sample_dirs), self.samples_root)
+        logger.info(f"Dataset initialized with {self.num} total samples.")
 
     def __len__(self):
         return self.num
@@ -74,43 +79,46 @@ class TrkDataset(Dataset):
         for p in img_paths:
             img = cv2.imread(p)
             if img is None:
-                raise RuntimeError("Cannot read template image: %s" % p)
+                logger.warning(f"Cannot read template image: {p}")
+                continue
             imgs.append(img)
         while len(imgs) < self.num_templates:
             imgs.append(imgs[-1].copy())
+        logger.debug(f"Loaded {len(imgs)} template images from {sample_dir}")
         return imgs
 
     def _sample_frame_from_video(self, video_path, ann_bboxes=None):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            logger.warning("Cannot open video: %s" % video_path)
+            logger.warning(f"Cannot open video: {video_path}")
             return None, None, None
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        logger.debug(f"Video {video_path} has {frame_count} frames")
 
         if ann_bboxes:
             frame_keys = [int(k) for k in ann_bboxes.keys()]
             if len(frame_keys) == 0:
                 fidx = np.random.randint(0, frame_count)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
-                ret, frame = cap.read()
-                cap.release()
-                return fidx, frame, None
-            fidx = np.random.choice(frame_keys)
+            else:
+                fidx = np.random.choice(frame_keys)
             cap.set(cv2.CAP_PROP_POS_FRAMES, fidx - 1)
             ret, frame = cap.read()
             cap.release()
             if not ret:
+                logger.warning(f"Failed to read frame {fidx} from {video_path}")
                 return None, None, None
-            bbox = ann_bboxes.get(str(fidx)) or ann_bboxes.get("{:d}".format(fidx))
+            bbox = ann_bboxes.get(str(fidx)) or ann_bboxes.get(f"{fidx}")
             return fidx, frame, bbox
-        else:
-            fidx = np.random.randint(0, frame_count)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
-            ret, frame = cap.read()
-            cap.release()
-            if not ret:
-                return None, None, None
-            return fidx, frame, None
+
+        # Random frame if no annotations
+        fidx = np.random.randint(0, frame_count)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            logger.warning(f"Failed to read random frame {fidx} from {video_path}")
+            return None, None, None
+        return fidx, frame, None
 
     def _compute_search_box_from_ann(self, image, ann_bbox):
         try:
@@ -122,27 +130,28 @@ class TrkDataset(Dataset):
                 x1, y1, x2, y2 = b
                 w = x2 - x1
                 h = y2 - y1
-                cx = x1 + w/2.0
-                cy = y1 + h/2.0
-            elif len(b) == 2:
-                w, h = b
-                h_img, w_img = image.shape[:2]
-                cx, cy = w_img/2.0, h_img/2.0
+                cx = x1 + w / 2.0
+                cy = y1 + h / 2.0
+                logger.debug(f"Computed bbox from annotation: {b}")
             else:
                 h_img, w_img = image.shape[:2]
-                cx, cy = w_img/2.0, h_img/2.0
-                w, h = w_img*0.2, h_img*0.2
-        except Exception:
+                cx, cy = w_img / 2.0, h_img / 2.0
+                w, h = w_img * 0.2, h_img * 0.2
+            return center2corner(Center(int(cx), int(cy), int(w), int(h)))
+        except Exception as e:
+            logger.error(f"Error computing bbox from annotation: {e}")
             h_img, w_img = image.shape[:2]
-            cx, cy = w_img/2.0, h_img/2.0
-            w, h = w_img*0.2, h_img*0.2
-        return center2corner(Center(int(cx), int(cy), int(w), int(h)))
+            cx, cy = w_img / 2.0, h_img / 2.0
+            w, h = w_img * 0.2, h_img * 0.2
+            return center2corner(Center(int(cx), int(cy), int(w), int(h)))
 
     def __getitem__(self, index):
+        logger.debug(f"Fetching item at index {index}")
         sample_dir = self.sample_dirs[np.random.randint(0, len(self.sample_dirs))]
         sample_name = os.path.basename(sample_dir)
+        logger.debug(f"Selected sample directory: {sample_name}")
 
-        # template
+        # Template
         templates_np = self._load_templates(sample_dir)
         templates_proc = []
         for timg in templates_np:
@@ -152,39 +161,36 @@ class TrkDataset(Dataset):
             bw, bh = int(w * 0.5), int(h * 0.5)
             center_box = center2corner(Center(cx, cy, bw, bh))
             tpl_crop, _ = self.template_aug(im, center_box, cfg.TRAIN.EXEMPLAR_SIZE, gray=False)
-            
-            # Ép kiểu sang float32 trước khi cvtColor
+
             tpl_crop = tpl_crop.astype(np.float32)
             tpl_crop = cv2.cvtColor(tpl_crop, cv2.COLOR_BGR2RGB)
             tpl_crop = self.to_tensor(tpl_crop)
-    
-            templates_proc.append(tpl_crop)
 
+            templates_proc.append(tpl_crop)
         templates_t = np.stack(templates_proc, axis=0)
 
-
-        # search
+        # Search
         ann_for_video = self.annotations.get(sample_name, None)
         video_path = os.path.join(sample_dir, 'drone_video.mp4')
         frame_idx, search_frame, ann_bbox = self._sample_frame_from_video(video_path, ann_for_video)
 
         if search_frame is None:
-            search_t = np.zeros((3, cfg.TRAIN.SEARCH_SIZE, cfg.TRAIN.SEARCH_SIZE), dtype=np.float32)
+            logger.warning(f"No valid search frame for sample: {sample_name}")
             return {
                 'templates': templates_t,
-                'search': search_t,
+                'search': np.zeros((3, cfg.TRAIN.SEARCH_SIZE, cfg.TRAIN.SEARCH_SIZE), dtype=np.float32),
                 'label_cls': np.zeros((1,)),
-                'label_loc': np.zeros((1,4)),
-                'label_loc_weight': np.zeros((1,4)),
-                'bbox': np.array([0,0,0,0])
+                'label_loc': np.zeros((1, 4)),
+                'label_loc_weight': np.zeros((1, 4)),
+                'bbox': np.array([0, 0, 0, 0])
             }
 
         search_box = self._compute_search_box_from_ann(search_frame, ann_bbox)
         search_crop, bbox = self.search_aug(search_frame, search_box, cfg.TRAIN.SEARCH_SIZE, gray=False)
         search_t = self.to_tensor(cv2.cvtColor(search_crop.astype(np.float32), cv2.COLOR_BGR2RGB))
 
-
         cls, delta, delta_weight, overlap = self.anchor_target(bbox, cfg.TRAIN.OUTPUT_SIZE, neg=False)
+        logger.debug(f"Generated anchor targets for sample: {sample_name}")
 
         return {
             'templates': templates_t,
@@ -205,9 +211,8 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
         max_samples: Số lượng sample muốn lưu (tránh tốn dung lượng)
     """
     os.makedirs(save_dir, exist_ok=True)
-    logger.info(f"Saving processed dataset to {save_dir} ...")
+    logger.info(f"Start saving processed dataset to {save_dir} ...")
 
-    # Mỗi sample -> 1 file .npz
     for i in range(min(len(dataset), max_samples)):
         data = dataset[i]
         np.savez_compressed(
@@ -215,11 +220,11 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
             templates=data['templates'],
             search=data['search'],
             label_cls=data['label_cls'],
-            label_loc=data['label_loc'],
-            label_loc_weight=data['label_loc_weight'],
-            bbox=data['bbox']
+            label_loc=data.get('label_loc'),
+            label_loc_weight=data.get('label_loc_weight'),
+            bbox=data.get('bbox')
         )
-        if i % 100 == 0:
+        if i % 100 == 0 and i > 0:
             logger.info(f"Saved {i}/{max_samples} samples...")
 
-    logger.info("Done saving processed dataset!")
+    logger.info("✅ Done saving processed dataset!")
