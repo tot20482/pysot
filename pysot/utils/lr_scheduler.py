@@ -20,9 +20,7 @@ class LRScheduler(_LRScheduler):
         super(LRScheduler, self).__init__(optimizer, last_epoch)
 
     def get_cur_lr(self):
-        idx = min(self.last_epoch, len(self.lr_spaces) - 1)
-        return self.lr_spaces[idx]
-
+        return self.lr_spaces[self.last_epoch]
 
     def get_lr(self):
         epoch = min(self.last_epoch, len(self.lr_spaces) - 1)
@@ -134,13 +132,8 @@ LRs = {
 
 
 def _build_lr_scheduler(optimizer, config, epochs=50, last_epoch=-1):
-    # copy kwargs để không sửa trực tiếp config
-    kwargs = dict(config.KWARGS)  
-    # loại bỏ epochs nếu có trong kwargs để tránh trùng lặp
-    kwargs.pop('epochs', None)  
     return LRs[config.TYPE](optimizer, last_epoch=last_epoch,
-                            epochs=epochs, **kwargs)
-
+                            epochs=epochs, **config.KWARGS)
 
 
 def _build_warm_up_scheduler(optimizer, epochs=50, last_epoch=-1):

@@ -11,7 +11,7 @@ __C = CN()
 
 cfg = __C
 
-__C.META_ARC = "siamrpn_mobilev2_l234_dwxcorr"
+__C.META_ARC = "siamrpn_r50_l234_dwxcorr"
 
 __C.CUDA = True
 
@@ -37,9 +37,9 @@ __C.TRAIN.POS_NUM = 16
 __C.TRAIN.TOTAL_NUM = 64
 
 
-__C.TRAIN.EXEMPLAR_SIZE = 63
+__C.TRAIN.EXEMPLAR_SIZE = 127
 
-__C.TRAIN.SEARCH_SIZE = 127
+__C.TRAIN.SEARCH_SIZE = 255
 
 __C.TRAIN.BASE_SIZE = 8
 
@@ -53,13 +53,13 @@ __C.TRAIN.LOG_DIR = './logs'
 
 __C.TRAIN.SNAPSHOT_DIR = './snapshot'
 
-__C.TRAIN.EPOCH = 5
+__C.TRAIN.EPOCH = 20
 
 __C.TRAIN.START_EPOCH = 0
 
-__C.TRAIN.BATCH_SIZE = 16
+__C.TRAIN.BATCH_SIZE = 32
 
-__C.TRAIN.NUM_WORKERS = 4
+__C.TRAIN.NUM_WORKERS = 1
 
 __C.TRAIN.MOMENTUM = 0.9
 
@@ -71,13 +71,13 @@ __C.TRAIN.LOC_WEIGHT = 1.2
 
 __C.TRAIN.MASK_WEIGHT = 1
 
-__C.TRAIN.PRINT_FREQ = 100
+__C.TRAIN.PRINT_FREQ = 20
 
 __C.TRAIN.LOG_GRADS = False
 
 __C.TRAIN.GRAD_CLIP = 10.0
 
-__C.TRAIN.BASE_LR = 0.02
+__C.TRAIN.BASE_LR = 0.005
 
 __C.TRAIN.LR = CN()
 
@@ -141,34 +141,34 @@ __C.DATASET.VID = CN()
 __C.DATASET.VID.ROOT = 'training_dataset/vid/crop511'
 __C.DATASET.VID.ANNO = 'training_dataset/vid/train.json'
 __C.DATASET.VID.FRAME_RANGE = 100
-__C.DATASET.VID.NUM_USE = 20000  # repeat until reach NUM_USE
+__C.DATASET.VID.NUM_USE = 100000  # repeat until reach NUM_USE
 
 __C.DATASET.YOUTUBEBB = CN()
 __C.DATASET.YOUTUBEBB.ROOT = 'training_dataset/yt_bb/crop511'
 __C.DATASET.YOUTUBEBB.ANNO = 'training_dataset/yt_bb/train.json'
 __C.DATASET.YOUTUBEBB.FRAME_RANGE = 3
-__C.DATASET.YOUTUBEBB.NUM_USE = 5000  # use all not repeat
+__C.DATASET.YOUTUBEBB.NUM_USE = -1  # use all not repeat
 
 __C.DATASET.COCO = CN()
 __C.DATASET.COCO.ROOT = 'training_dataset/coco/crop511'
 __C.DATASET.COCO.ANNO = 'training_dataset/coco/train2017.json'
 __C.DATASET.COCO.FRAME_RANGE = 1
-__C.DATASET.COCO.NUM_USE = 5000
+__C.DATASET.COCO.NUM_USE = -1
 
 __C.DATASET.DET = CN()
 __C.DATASET.DET.ROOT = 'training_dataset/det/crop511'
 __C.DATASET.DET.ANNO = 'training_dataset/det/train.json'
 __C.DATASET.DET.FRAME_RANGE = 1
-__C.DATASET.DET.NUM_USE = 5000
+__C.DATASET.DET.NUM_USE = -1
 
-__C.DATASET.VIDEOS_PER_EPOCH = 5000
+__C.DATASET.VIDEOS_PER_EPOCH = 600000
 # ------------------------------------------------------------------------ #
 # Backbone options
 # ------------------------------------------------------------------------ #
 __C.BACKBONE = CN()
 
 # Backbone type, current only support resnet18,34,50;alexnet;mobilenet
-__C.BACKBONE.TYPE = 'mobilenet'
+__C.BACKBONE.TYPE = 'res50'
 
 __C.BACKBONE.KWARGS = CN(new_allowed=True)
 
@@ -176,13 +176,13 @@ __C.BACKBONE.KWARGS = CN(new_allowed=True)
 __C.BACKBONE.PRETRAINED = ''
 
 # Train layers
-__C.BACKBONE.TRAIN_LAYERS = ['layer3', 'layer4']
+__C.BACKBONE.TRAIN_LAYERS = ['layer2', 'layer3', 'layer4']
 
 # Layer LR
 __C.BACKBONE.LAYERS_LR = 0.1
 
 # Switch to train layer
-__C.BACKBONE.TRAIN_EPOCH = 3
+__C.BACKBONE.TRAIN_EPOCH = 10
 
 # ------------------------------------------------------------------------ #
 # Adjust layer options
