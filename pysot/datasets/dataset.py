@@ -194,3 +194,32 @@ class TrkDataset(Dataset):
             'label_loc_weight': delta_weight,
             'bbox': np.array(bbox)
         }
+
+
+def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset", max_samples=1000):
+    """
+    Preprocess and save dataset samples into numpy files.
+    Args:
+        dataset: Instance của TrkDataset
+        save_dir: Folder để lưu file .npz
+        max_samples: Số lượng sample muốn lưu (tránh tốn dung lượng)
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    logger.info(f"Saving processed dataset to {save_dir} ...")
+
+    # Mỗi sample -> 1 file .npz
+    for i in range(min(len(dataset), max_samples)):
+        data = dataset[i]
+        np.savez_compressed(
+            os.path.join(save_dir, f"sample_{i:06d}.npz"),
+            templates=data['templates'],
+            search=data['search'],
+            label_cls=data['label_cls'],
+            label_loc=data['label_loc'],
+            label_loc_weight=data['label_loc_weight'],
+            bbox=data['bbox']
+        )
+        if i % 100 == 0:
+            logger.info(f"Saved {i}/{max_samples} samples...")
+
+    logger.info("Done saving processed dataset!")

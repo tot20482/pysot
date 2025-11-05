@@ -226,17 +226,10 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        # 👉 Forward trên GPU
+        # 👉 Forward trên GPU (log ra xem thử là data có đang ở trên gpu không??)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        for idx, data in enumerate(train_loader):
-            # 🚀 chuyển ALL tensors sang GPU
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
-                    data[k] = v.to(device, non_blocking=True)
-
-            # forward trên GPU
-            outputs = model(data)
+        outputs = model(data)
 
         loss = outputs['total_loss']
 
