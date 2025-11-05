@@ -229,18 +229,64 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
 
     logger.info("✅ Done saving processed dataset!")
 
+def convert_annotations(input_dir, output_file):
+    """
+    Convert ZaloAI annotation format into PySOT required format.
+    input_dir: folder chứa nhiều file JSON, mỗi file là 1 video
+    output_file: file json sau khi merge và convert
+    """
+    merged = {}
+    ann_files = sorted(glob(os.path.join(input_dir, "*.json")))
+    if len(ann_files) == 0:
+        logger.error(f"No annotation files found in {input_dir}")
+        return None
+    
+    for file in ann_files:
+        with open(file, "r") as f:
+            ann = json.load(f)
+
+        vid = ann.get("video_id")  # "Backpack_0"
+        if not vid:
+            logger.warning(f"File {file} missing video_id field, skipping")
+            continue
+        
+        frames = {}
+        for block in ann.get("annotations", []):
+            for bbox in block.get("bboxes", []):
+                frame = str(bbox["frame"])
+                frames[frame] = [bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]]
+
+        merged[vid] = frames
+    
+    with open(output_file, "w") as f:
+        json.dump(merged, f, indent=2)
+
+    logger.info(f"✅ Converted annotation saved to: {output_file}")
+    logger.info(f"📌 Total videos processed: {len(merged)}")
+    return output_file
+
+
 
 def main():
     # Load config file
     config_path = "/kaggle/working/pysot/experiments/siamrpn_alex_dwxcorr_otb/config.yaml"
     cfg.merge_from_file(config_path)
     cfg.freeze()
+
+    # === ✅ STEP 1: Convert annotation format ===
+    ann_input_dir = "/kaggle/input/zaloai2025-aeroeyes/observing/train/annotations"
+    ann_output_file = "/kaggle/working/annotations_fixed.json"
+    convert_annotations(ann_input_dir, ann_output_file)
+
+    # === ✅ STEP 2: Init dataset with converted annotation ===
+    dataset = TrkDataset(
+        samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples",
+        ann_path=ann_output_file
+    )
     
-    # Initialize dataset
-    dataset = TrkDataset(samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples")
-    
-    # Save processed dataset
+    # === ✅ STEP 3: Save processed dataset ===
     save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset", max_samples=1000)
+
 
 if __name__ == "__main__":
     main()
