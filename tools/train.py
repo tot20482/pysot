@@ -158,12 +158,7 @@ def log_grads(model, tb_writer, tb_index):
     tb_writer.add_scalar('grad/feature', feature_norm, tb_index)
     tb_writer.add_scalar('grad/rpn', rpn_norm, tb_index)
 
-
-from tqdm import tqdm
-import torch, os, math, time
-
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
-    # ===== Setup =====
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     rank = get_rank()
@@ -173,34 +168,28 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
     max_epoch = cfg.TRAIN.EPOCH
     epoch = start_epoch
 
-    def is_valid_number(x):
-        return not (math.isnan(x) or math.isinf(x) or x > 1e4)
-
     if get_rank() == 0 and not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR):
         os.makedirs(cfg.TRAIN.SNAPSHOT_DIR)
 
-    # Correct batches per epoch
     num_per_epoch = len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size)
     end = time.time()
 
     # ===== Training Loop =====
     for idx, data in tqdm(enumerate(train_loader), total=len(train_loader),
                           desc=f"Training", ncols=100, mininterval=1.0):
-
-        # --- Move data to GPU ---
+        # --- Move data to GPU ONCE ---
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
 
         # --- Determine current epoch ---
         new_epoch = idx // num_per_epoch + start_epoch
         if new_epoch != epoch:
             epoch = new_epoch
-
             # Save checkpoint
             if get_rank() == 0:
                 ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f'checkpoint_e{epoch}.pth')
                 torch.save({
                     'epoch': epoch,
-                    'state_dict': model.module.state_dict(),
+                    'state_dict': model.module.state_dict() if isinstance(model, DistModule) else model.state_dict(),
                     'optimizer': optimizer.state_dict()
                 }, ckpt_path)
                 logger.info(f"Saved checkpoint: {ckpt_path}")
@@ -213,7 +202,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             # Rebuild optimizer / scheduler if backbone unfreezes
             if epoch == cfg.BACKBONE.TRAIN_EPOCH:
                 logger.info('Start training backbone.')
-                optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
+                optimizer, lr_scheduler = build_opt_lr(model.module if isinstance(model, DistModule) else model, epoch)
 
             # Safe scheduler step
             if hasattr(lr_scheduler, "cur_epoch") and lr_scheduler.cur_epoch + 1 < len(lr_scheduler.lr_spaces):
@@ -221,35 +210,23 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             cur_lr = lr_scheduler.get_cur_lr()
             logger.info(f"Epoch {epoch + 1}, LR: {cur_lr}")
 
-        # --- Timing: data loading ---
-        data_time = average_reduce(time.time() - end)
-        tb_idx = idx
-        if rank == 0:
-            tb_writer.add_scalar('time/data', data_time, tb_idx)
-
         # --- Forward pass ---
-        start_fwd = time.time()
         outputs = model(data)
         loss = outputs['total_loss']
-        fwd_time = time.time() - start_fwd
 
         # --- Backprop ---
-        if is_valid_number(loss.item()):
+        if not (math.isnan(loss.item()) or math.isinf(loss.item()) or loss.item() > 1e4):
             optimizer.zero_grad()
             loss.backward()
             reduce_gradients(model)
             clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
             optimizer.step()
 
+        # --- Update meters ---
         batch_time = time.time() - end
         end = time.time()
 
-        # --- Update meters ---
-        batch_info = {
-            'batch_time': average_reduce(batch_time),
-            'data_time': average_reduce(data_time),
-            'fwd_time': fwd_time
-        }
+        batch_info = {'batch_time': average_reduce(batch_time)}
         for k, v in sorted(outputs.items()):
             batch_info[k] = average_reduce(v.item())
         average_meter.update(**batch_info)
@@ -264,15 +241,14 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                 print_speed(idx + 1 + start_epoch * num_per_epoch,
                             average_meter.batch_time.avg,
                             max_epoch * num_per_epoch)
-            # Less frequent TensorBoard logging to reduce overhead
-            if (idx + 1) % 10 == 0:
+            # TensorBoard logging less frequent
+            if (idx + 1) % 10 == 0 and tb_writer:
                 for k, v in batch_info.items():
-                    tb_writer.add_scalar(k, v, tb_idx)
+                    tb_writer.add_scalar(k, v, idx)
 
-        # --- Update tqdm (not every iteration, to avoid slowdown) ---
+        # tqdm log
         if (idx + 1) % 20 == 0:
-            tqdm.write(f"[Epoch {epoch+1}] Step {idx+1}: loss={loss.item():.4f}, lr={cur_lr:.6f}, "
-                       f"time={batch_time:.2f}s")
+            tqdm.write(f"[Epoch {epoch+1}] Step {idx+1}: loss={loss.item():.4f}, lr={cur_lr:.6f}, time={batch_time:.2f}s")
 
     logger.info("Training finished successfully ✅")
 
