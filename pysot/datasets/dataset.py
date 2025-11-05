@@ -243,7 +243,9 @@ def convert_annotations(input_file, output_file):
     logger.info(f"🔍 Found {len(data)} annotation records in {input_file}")
 
     for ann in data:
-        video_id = ann.get("video_id")
+        print(type(ann), ann)  # Debug
+        video_id = ann.get("video_id")  # Lỗi xảy ra tại đây
+
         if not video_id:
             logger.warning(f"⚠️ Missing 'video_id' in entry, skipping")
             continue
