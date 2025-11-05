@@ -159,119 +159,122 @@ def log_grads(model, tb_writer, tb_index):
     tb_writer.add_scalar('grad/rpn', rpn_norm, tb_index)
 
 
+from tqdm import tqdm
+import torch, os, math, time
+
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
-    # Ensure model is on GPU
+    # ===== Setup =====
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-
-    cur_lr = lr_scheduler.get_cur_lr()
     rank = get_rank()
+    world_size = get_world_size()
     average_meter = AverageMeter()
+    start_epoch = cfg.TRAIN.START_EPOCH
+    max_epoch = cfg.TRAIN.EPOCH
+    epoch = start_epoch
 
     def is_valid_number(x):
         return not (math.isnan(x) or math.isinf(x) or x > 1e4)
 
-    world_size = get_world_size()
-    num_per_epoch = len(train_loader.dataset) // cfg.TRAIN.EPOCH // (cfg.TRAIN.BATCH_SIZE * world_size)
-    start_epoch = cfg.TRAIN.START_EPOCH
-    epoch = start_epoch
-
-    if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and get_rank() == 0:
+    if get_rank() == 0 and not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR):
         os.makedirs(cfg.TRAIN.SNAPSHOT_DIR)
 
-    # logger.info("model\n{}".format(describe(model.module)))
-
+    # Correct batches per epoch
+    num_per_epoch = len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size)
     end = time.time()
-    pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}", ncols=100)
-    for idx, data in pbar:
-        # 🚀 Move all tensors to GPU
+
+    # ===== Training Loop =====
+    for idx, data in tqdm(enumerate(train_loader), total=len(train_loader),
+                          desc=f"Training", ncols=100, mininterval=1.0):
+
+        # --- Move data to GPU ---
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
 
-        # Update epoch if needed
-        if epoch != idx // num_per_epoch + start_epoch:
-            epoch = idx // num_per_epoch + start_epoch
+        # --- Determine current epoch ---
+        new_epoch = idx // num_per_epoch + start_epoch
+        if new_epoch != epoch:
+            epoch = new_epoch
 
+            # Save checkpoint
             if get_rank() == 0:
-                torch.save(
-                    {
-                        'epoch': epoch,
-                        'state_dict': model.module.state_dict(),
-                        'optimizer': optimizer.state_dict()
-                    },
-                    os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f'checkpoint_e{epoch}.pth')
-                )
+                ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f'checkpoint_e{epoch}.pth')
+                torch.save({
+                    'epoch': epoch,
+                    'state_dict': model.module.state_dict(),
+                    'optimizer': optimizer.state_dict()
+                }, ckpt_path)
+                logger.info(f"Saved checkpoint: {ckpt_path}")
 
-            if epoch >= cfg.TRAIN.EPOCH:
-                pbar.close()
-                return
+            # Stop if finished
+            if epoch >= max_epoch:
+                logger.info("Training complete.")
+                break
 
-            if cfg.BACKBONE.TRAIN_EPOCH == epoch:
+            # Rebuild optimizer / scheduler if backbone unfreezes
+            if epoch == cfg.BACKBONE.TRAIN_EPOCH:
                 logger.info('Start training backbone.')
                 optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
 
-            # ✅ Safe scheduler stepping
+            # Safe scheduler step
             if hasattr(lr_scheduler, "cur_epoch") and lr_scheduler.cur_epoch + 1 < len(lr_scheduler.lr_spaces):
                 lr_scheduler.step()
             cur_lr = lr_scheduler.get_cur_lr()
-            logger.info(f"Epoch: {epoch + 1}")
+            logger.info(f"Epoch {epoch + 1}, LR: {cur_lr}")
 
-        tb_idx = idx
-        if idx % num_per_epoch == 0 and idx != 0:
-            for i, pg in enumerate(optimizer.param_groups):
-                logger.info(f"Epoch {epoch + 1} lr {pg['lr']}")
-                if rank == 0:
-                    tb_writer.add_scalar(f'lr/group{i + 1}', pg['lr'], tb_idx)
-
+        # --- Timing: data loading ---
         data_time = average_reduce(time.time() - end)
+        tb_idx = idx
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        # 🔁 Forward + loss
+        # --- Forward pass ---
+        start_fwd = time.time()
         outputs = model(data)
         loss = outputs['total_loss']
+        fwd_time = time.time() - start_fwd
 
+        # --- Backprop ---
         if is_valid_number(loss.item()):
             optimizer.zero_grad()
             loss.backward()
             reduce_gradients(model)
-
-            if rank == 0 and cfg.TRAIN.LOG_GRADS:
-                log_grads(model.module, tb_writer, tb_idx)
-
             clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
             optimizer.step()
 
         batch_time = time.time() - end
-        batch_info = {'batch_time': average_reduce(batch_time), 'data_time': average_reduce(data_time)}
-        for k, v in sorted(outputs.items()):
-            batch_info[k] = average_reduce(v.item())
-
-        average_meter.update(**batch_info)
-
-        # 🧾 Logging to TensorBoard
-        if rank == 0:
-            for k, v in batch_info.items():
-                tb_writer.add_scalar(k, v, tb_idx)
-
-            if (idx + 1) % cfg.TRAIN.PRINT_FREQ == 0:
-                info = f"Epoch: [{epoch + 1}][{(idx + 1) % num_per_epoch}/{num_per_epoch}] lr: {cur_lr:.6f}\n"
-                for cc, (k, v) in enumerate(batch_info.items()):
-                    info += f"\t{k}: {v:.4f}"
-                    info += "\n" if cc % 2 == 1 else "\t"
-                logger.info(info)
-                print_speed(idx + 1 + start_epoch * num_per_epoch, average_meter.batch_time.avg,
-                            cfg.TRAIN.EPOCH * num_per_epoch)
-
-        # 🌀 Update tqdm progress bar text
-        pbar.set_postfix({
-            'loss': f"{loss.item():.4f}",
-            'lr': f"{cur_lr:.6f}",
-            'batch_time': f"{batch_time:.2f}s"
-        })
-
         end = time.time()
 
-    pbar.close()
+        # --- Update meters ---
+        batch_info = {
+            'batch_time': average_reduce(batch_time),
+            'data_time': average_reduce(data_time),
+            'fwd_time': fwd_time
+        }
+        for k, v in sorted(outputs.items()):
+            batch_info[k] = average_reduce(v.item())
+        average_meter.update(**batch_info)
+
+        # --- Logging ---
+        if rank == 0:
+            if (idx + 1) % cfg.TRAIN.PRINT_FREQ == 0:
+                info = (f"Epoch: [{epoch + 1}][{(idx + 1) % num_per_epoch}/{num_per_epoch}] "
+                        f"lr: {cur_lr:.6f}, loss: {loss.item():.4f}, "
+                        f"batch_time: {batch_time:.2f}s")
+                logger.info(info)
+                print_speed(idx + 1 + start_epoch * num_per_epoch,
+                            average_meter.batch_time.avg,
+                            max_epoch * num_per_epoch)
+            # Less frequent TensorBoard logging to reduce overhead
+            if (idx + 1) % 10 == 0:
+                for k, v in batch_info.items():
+                    tb_writer.add_scalar(k, v, tb_idx)
+
+        # --- Update tqdm (not every iteration, to avoid slowdown) ---
+        if (idx + 1) % 20 == 0:
+            tqdm.write(f"[Epoch {epoch+1}] Step {idx+1}: loss={loss.item():.4f}, lr={cur_lr:.6f}, "
+                       f"time={batch_time:.2f}s")
+
+    logger.info("Training finished successfully ✅")
 
 
 
