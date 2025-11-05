@@ -230,74 +230,59 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
 
     logger.info("✅ Done saving processed dataset!")
 
-def convert_annotations(input_dir, output_file):
+def convert_annotations(input_file, output_file):
     """
     Convert ZaloAI annotation format into PySOT required format.
-    input_dir: folder chứa nhiều file JSON, mỗi file là 1 video
-    output_file: file json sau khi merge và convert
+    input_file: một file JSON lớn chứa list video annotation
+    output_file: file json sau khi convert
     """
+    with open(input_file, "r") as f:
+        data = json.load(f)
+
     merged = {}
-    ann_files = sorted(glob(os.path.join(input_dir, "*.json")))
-    logger.info(f"🔍 Found {len(ann_files)} annotation files in {input_dir}")
+    logger.info(f"🔍 Found {len(data)} annotation records in {input_file}")
 
-    if len(ann_files) == 0:
-        logger.error(f"❌ No annotation files found in {input_dir}")
-        return None
-    
-    for file in ann_files:
-        logger.info(f"📄 Reading annotation file: {os.path.basename(file)}")
-
-        with open(file, "r") as f:
-            ann = json.load(f)
-
-        # ✅ Fix: Nếu ann là list -> lấy phần tử đầu tiên
-        if isinstance(ann, list):
-            if len(ann) == 0:
-                logger.warning(f"⚠️ File {file} contains empty list, skipping")
-                continue
-            ann = ann[0]
-
-        if not isinstance(ann, dict):
-            logger.error(f"❌ Annotation format invalid in {file}. Expected dict, got {type(ann)}")
+    for ann in data:
+        video_id = ann.get("video_id")
+        if not video_id:
+            logger.warning(f"⚠️ Missing 'video_id' in entry, skipping")
             continue
 
-        vid = ann.get("video_id")
-        if not vid:
-            logger.warning(f"⚠️ File {file} has no 'video_id', skipping")
-            continue
-        
         frames = {}
-        bbox_blocks = ann.get("annotations", [])
-        if not bbox_blocks:
-            logger.warning(f"⚠️ File {file} has no 'annotations' list, skipping")
+        ann_list = ann.get("annotations", [])
+        if not ann_list:
+            logger.warning(f"⚠️ No 'annotations' found for video {video_id}, skipping")
             continue
 
-        for block in bbox_blocks:
+        # Duyệt qua từng khối annotations (thường chỉ có 1)
+        for block in ann_list:
             for bbox in block.get("bboxes", []):
-                frame = str(bbox["frame"])
+                frame = str(bbox.get("frame", -1))
+                if frame == "-1":
+                    logger.warning(f"⚠️ Invalid frame in video {video_id}, skipping bbox")
+                    continue
                 frames[frame] = [
-                    bbox["x1"],
-                    bbox["y1"],
-                    bbox["x2"],
-                    bbox["y2"]
+                    bbox.get("x1", 0),
+                    bbox.get("y1", 0),
+                    bbox.get("x2", 0),
+                    bbox.get("y2", 0)
                 ]
 
         if len(frames) == 0:
-            logger.warning(f"⚠️ No bbox frames found for video {vid}, skipping")
+            logger.warning(f"⚠️ No bbox frames found for video {video_id}, skipping")
             continue
 
-        merged[vid] = frames
-        logger.info(f"✅ Processed {vid}: {len(frames)} frames")
+        merged[video_id] = frames
+        logger.info(f"✅ Processed {video_id}: {len(frames)} frames")
 
-    # === Save output ===
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w") as f:
         json.dump(merged, f, indent=2)
 
     logger.info(f"🎯 Done! Converted annotation saved to: {output_file}")
-    logger.info(f"📌 Total videos processed: {len(merged)}")
-
+    logger.info(f"📌 Total valid videos processed: {len(merged)}")
     return output_file
+
 
 
 def main():
@@ -307,18 +292,19 @@ def main():
     cfg.freeze()
 
     # === ✅ STEP 1: Convert annotation format ===
-    ann_input_dir = "/kaggle/input/zaloai2025-aeroeyes/observing/train/annotations"
-    ann_output_file = "/kaggle/working/annotations_fixed.json"
-    convert_annotations(ann_input_dir, ann_output_file)
+    ann_input_file = "/kaggle/input/zaloai2025-aeroeyes/observing/train/annotations/all_annotations.json"
+    ann_output_file = "/kaggle/working/processed_dataset/annotations/annotations.json"
+    convert_annotations(ann_input_file, ann_output_file)
 
-    # === ✅ STEP 2: Init dataset with converted annotation ===
+    # === ✅ STEP 2: Init dataset ===
     dataset = TrkDataset(
         samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples",
         ann_path=ann_output_file
     )
     
-    # === ✅ STEP 3: Save processed dataset ===
-    save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset", max_samples=1000)
+    # === ✅ STEP 3: Save processed samples ===
+    save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset/samples", max_samples=1000)
+
 
 
 if __name__ == "__main__":
