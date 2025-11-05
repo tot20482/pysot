@@ -234,7 +234,7 @@ def main():
     """
     Main function to initialize config, dataset, and save processed data
     """
-    cfg.merge_from_file("pysot/experiments/siamrpn_alexnet/config.yaml")
+    cfg.merge_from_file("\experiments\siamrpn_alex_dwxcorr_otb\config.yaml")
     cfg.freeze()
 
     dataset = TrkDataset(
