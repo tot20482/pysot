@@ -178,7 +178,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
     if not os.path.exists(cfg.TRAIN.SNAPSHOT_DIR) and get_rank() == 0:
         os.makedirs(cfg.TRAIN.SNAPSHOT_DIR)
 
-    logger.info("model\n{}".format(describe(model.module)))
+    # logger.info("model\n{}".format(describe(model.module)))
 
     end = time.time()
     for idx, data in enumerate(train_loader):
@@ -204,11 +204,11 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             if cfg.BACKBONE.TRAIN_EPOCH == epoch:
                 logger.info('start training backbone.')
                 optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
-                logger.info("model\n{}".format(describe(model.module)))
+                # logger.info("model\n{}".format(describe(model.module)))
 
             # Chặn vượt quá số lr_spaces
-            safe_epoch = min(epoch, len(lr_scheduler.lr_spaces) - 1)
-            lr_scheduler.step(safe_epoch)
+            if hasattr(lr_scheduler, "cur_epoch") and lr_scheduler.cur_epoch + 1 < len(lr_scheduler.lr_spaces):
+                lr_scheduler.step()
             cur_lr = lr_scheduler.get_cur_lr()
             logger.info('epoch: {}'.format(epoch + 1))
 
@@ -288,7 +288,7 @@ def main():
                              logging.INFO)
 
         logger.info("Version Information: \n{}\n".format(commit()))
-        logger.info("config \n{}".format(json.dumps(cfg, indent=4)))
+        # logger.info("config \n{}".format(json.dumps(cfg, indent=4)))
 
     # create model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
