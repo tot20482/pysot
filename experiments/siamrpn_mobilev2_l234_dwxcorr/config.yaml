@@ -1,8 +1,10 @@
+META_ARC: "siamrpn_mobilev2_l234_dwxcorr"
+
 TRAIN:
   EPOCH: 20
   START_EPOCH: 0
-  BATCH_SIZE: 16       # reduce if GPU memory limited
-  NUM_WORKERS: 4       # speed up data loading
+  BATCH_SIZE: 16        # giảm nếu GPU memory hạn chế
+  NUM_WORKERS: 4        # tăng nếu CPU đủ nhanh
   BASE_LR: 0.005
   MOMENTUM: 0.9
   WEIGHT_DECAY: 0.0001
@@ -24,7 +26,40 @@ TRAIN:
       start_lr: 0.001
 
 BACKBONE:
-    TYPE: "mobilenetv2"
-    KWARGS:
-        used_layers: [3, 5, 7]
-        width_mult: 1.0    # smaller = faster
+  TYPE: "mobilenetv2"
+  KWARGS:
+    used_layers: [3, 5, 7]    # có thể giảm còn [5,7] nếu muốn nhẹ hơn
+    width_mult: 1.0            # giảm từ 1.4 → nhanh hơn
+
+ADJUST:
+  ADJUST: true
+  TYPE: "AdjustAllLayer"
+  KWARGS:
+    in_channels: [32, 96, 320]   # theo output của MobileNetV2 width_mult=1.0
+    out_channels: [256, 256, 256]
+
+RPN:
+  TYPE: 'MultiRPN'
+  KWARGS:
+    anchor_num: 5
+    in_channels: [256, 256, 256]
+    weighted: False
+
+MASK:
+  MASK: False
+
+ANCHOR:
+  STRIDE: 8
+  RATIOS: [0.33, 0.5, 1, 2, 3]
+  SCALES: [8]
+  ANCHOR_NUM: 5
+
+TRACK:
+  TYPE: 'SiamRPNTracker'
+  PENALTY_K: 0.04
+  WINDOW_INFLUENCE: 0.4
+  LR: 0.5
+  EXEMPLAR_SIZE: 127
+  INSTANCE_SIZE: 255
+  BASE_SIZE: 8
+  CONTEXT_AMOUNT: 0.5
