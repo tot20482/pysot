@@ -58,9 +58,10 @@ def build_data_loader():
     logger.info("build train dataset")
     
     train_dataset = TrkDataset(
-        samples_root="/kaggle/working/processed_dataset/samples",  # 👉 Thư mục chứa .npz sau xử lý
-        ann_path="/kaggle/working/processed_dataset/annotations.json"  # 👉 File chứa annotation chuẩn JSON
+        samples_root="/kaggle/working/processed_dataset/samples",
+        ann_path="/kaggle/working/processed_dataset/annotations/annotations_new.json"
     )
+
     
     logger.info(f"Number of samples in dataset: {len(train_dataset)}")
     logger.info("build dataset done")
