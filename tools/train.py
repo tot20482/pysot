@@ -206,9 +206,14 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                 optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
                 logger.info("model\n{}".format(describe(model.module)))
 
-            lr_scheduler.step(epoch)
+            # 🔹 Thay thế dòng này
+            # lr_scheduler.step(epoch)
+            if lr_scheduler.last_epoch < len(lr_scheduler.lr_spaces) - 1:
+                lr_scheduler.step(epoch)
+
             cur_lr = lr_scheduler.get_cur_lr()
             logger.info('epoch: {}'.format(epoch + 1))
+
 
         tb_idx = idx
         if idx % num_per_epoch == 0 and idx != 0:
