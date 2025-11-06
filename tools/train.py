@@ -1,9 +1,6 @@
 # Copyright (c) SenseTime. All Rights Reserved.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import argparse
 import logging
@@ -16,32 +13,66 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tensorboardX import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data.distributed import DistributedSampler
 
 from pysot.utils.lr_scheduler import build_lr_scheduler
 from pysot.utils.log_helper import init_log, print_speed, add_file_handler
-from pysot.utils.distributed import dist_init, DistModule, reduce_gradients,\
-        average_reduce, get_rank, get_world_size
+from pysot.utils.distributed import dist_init, DistModule, reduce_gradients, \
+    average_reduce, get_rank, get_world_size
 from pysot.utils.model_load import load_pretrain, restore_from
 from pysot.utils.average_meter import AverageMeter
 from pysot.utils.misc import describe, commit
 from pysot.models.model_builder import ModelBuilder
-from pysot.datasets.dataset import TrkDataset
 from pysot.core.config import cfg
 
 
 logger = logging.getLogger('global')
 parser = argparse.ArgumentParser(description='siamrpn tracking')
-parser.add_argument('--cfg', type=str, default='config.yaml',
-                    help='configuration of tracking')
-parser.add_argument('--seed', type=int, default=123456,
-                    help='random seed')
-parser.add_argument('--local_rank', type=int, default=0,
-                    help='compulsory for pytorch launcer')
+parser.add_argument('--cfg', type=str, default='config.yaml', help='configuration of tracking')
+parser.add_argument('--seed', type=int, default=123456, help='random seed')
+parser.add_argument('--local_rank', type=int, default=0, help='compulsory for pytorch launcer')
 args = parser.parse_args()
+
+
+class ProcessedDataset(Dataset):
+    def __init__(self, samples_root, ann_path):
+        self.samples_root = samples_root
+        with open(ann_path, 'r') as f:
+            ann_json = json.load(f)
+        self.samples = []
+
+        # Flatten annotations
+        for video in ann_json:
+            vid = video['video_id']
+            for track in video['annotations']:
+                for bbox_info in track['bboxes']:
+                    frame_id = bbox_info['frame']
+                    sample_file = os.path.join(samples_root, f"{vid}_f{frame_id}.npz")
+                    if os.path.exists(sample_file):
+                        self.samples.append({
+                            'sample_file': sample_file,
+                            'bbox': bbox_info
+                        })
+
+        logger.info(f"[ProcessedDataset] Loaded {len(self.samples)} samples")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        entry = self.samples[idx]
+        data = np.load(entry['sample_file'])
+        template = torch.tensor(data['template'], dtype=torch.float32)
+        search = torch.tensor(data['search'], dtype=torch.float32)
+        bbox = torch.tensor([entry['bbox'][k] for k in ["x1", "y1", "x2", "y2"]], dtype=torch.float32)
+        return {
+            'template': template,
+            'search': search,
+            'bbox': bbox
+        }
 
 
 def seed_torch(seed=0):
@@ -56,13 +87,12 @@ def seed_torch(seed=0):
 
 def build_data_loader():
     logger.info("build train dataset")
-    
-    train_dataset = TrkDataset(
+
+    train_dataset = ProcessedDataset(
         samples_root="/kaggle/working/processed_dataset/samples",
         ann_path="/kaggle/input/processed_dataset/annotatin-new/annotations_new.json"
     )
 
-    
     logger.info(f"Number of samples in dataset: {len(train_dataset)}")
     logger.info("build dataset done")
 
@@ -75,10 +105,9 @@ def build_data_loader():
         num_workers=cfg.TRAIN.NUM_WORKERS,
         pin_memory=True,
         sampler=train_sampler,
-        drop_last=True,  # ⚠️ tránh shape lỗi khi chia batch cuối cùng
+        drop_last=True,
     )
     return train_loader
-
 
 
 def build_opt_lr(model, current_epoch=0):
@@ -124,45 +153,7 @@ def build_opt_lr(model, current_epoch=0):
     return optimizer, lr_scheduler
 
 
-def log_grads(model, tb_writer, tb_index):
-    def weights_grads(model):
-        grad = {}
-        weights = {}
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                grad[name] = param.grad
-                weights[name] = param.data
-        return grad, weights
-
-    grad, weights = weights_grads(model)
-    feature_norm, rpn_norm = 0, 0
-    for k, g in grad.items():
-        _norm = g.data.norm(2)
-        weight = weights[k]
-        w_norm = weight.norm(2)
-        if 'feature' in k:
-            feature_norm += _norm ** 2
-        else:
-            rpn_norm += _norm ** 2
-
-        tb_writer.add_scalar('grad_all/'+k.replace('.', '/'),
-                             _norm, tb_index)
-        tb_writer.add_scalar('weight_all/'+k.replace('.', '/'),
-                             w_norm, tb_index)
-        tb_writer.add_scalar('w-g/'+k.replace('.', '/'),
-                             w_norm/(1e-20 + _norm), tb_index)
-    tot_norm = feature_norm + rpn_norm
-    tot_norm = tot_norm ** 0.5
-    feature_norm = feature_norm ** 0.5
-    rpn_norm = rpn_norm ** 0.5
-
-    tb_writer.add_scalar('grad/tot', tot_norm, tb_index)
-    tb_writer.add_scalar('grad/feature', feature_norm, tb_index)
-    tb_writer.add_scalar('grad/rpn', rpn_norm, tb_index)
-
-
 def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
-    # Ensure model is on GPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
@@ -185,7 +176,6 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
     end = time.time()
     for idx, data in enumerate(train_loader):
-        # 👉 Chuyển tất cả tensors trong data sang GPU
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
 
         if epoch != idx // num_per_epoch + start_epoch:
@@ -209,31 +199,18 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
                 optimizer, lr_scheduler = build_opt_lr(model.module, epoch)
                 logger.info("model\n{}".format(describe(model.module)))
 
-            # 🔹 Thay thế dòng này
-            # lr_scheduler.step(epoch)
             if lr_scheduler.last_epoch < len(lr_scheduler.lr_spaces) - 1:
                 lr_scheduler.step(epoch)
 
             cur_lr = lr_scheduler.get_cur_lr()
             logger.info('epoch: {}'.format(epoch + 1))
 
-
         tb_idx = idx
-        if idx % num_per_epoch == 0 and idx != 0:
-            for idx, pg in enumerate(optimizer.param_groups):
-                logger.info('epoch {} lr {}'.format(epoch + 1, pg['lr']))
-                if rank == 0:
-                    tb_writer.add_scalar('lr/group{}'.format(idx + 1), pg['lr'], tb_idx)
-
         data_time = average_reduce(time.time() - end)
         if rank == 0:
             tb_writer.add_scalar('time/data', data_time, tb_idx)
 
-        # 👉 Forward trên GPU (log ra xem thử là data có đang ở trên gpu không??)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         outputs = model(data)
-
         loss = outputs['total_loss']
 
         if is_valid_number(loss.item()):
@@ -248,7 +225,6 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             optimizer.step()
 
         batch_time = time.time() - end
-
         batch_info = {'batch_time': average_reduce(batch_time), 'data_time': average_reduce(data_time)}
         for k, v in sorted(outputs.items()):
             batch_info[k] = average_reduce(v.item())
@@ -270,73 +246,57 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
         end = time.time()
 
 
-
 def main():
     rank, world_size = dist_init()
     logger.info("init done")
 
-    # load cfg
     cfg.merge_from_file(args.cfg)
     if rank == 0:
         if not os.path.exists(cfg.TRAIN.LOG_DIR):
             os.makedirs(cfg.TRAIN.LOG_DIR)
         init_log('global', logging.INFO)
         if cfg.TRAIN.LOG_DIR:
-            add_file_handler('global',
-                             os.path.join(cfg.TRAIN.LOG_DIR, 'logs.txt'),
-                             logging.INFO)
+            add_file_handler('global', os.path.join(cfg.TRAIN.LOG_DIR, 'logs.txt'), logging.INFO)
 
         logger.info("Version Information: \n{}\n".format(commit()))
         logger.info("config \n{}".format(json.dumps(cfg, indent=4)))
 
-    # create model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ModelBuilder().to(device).train()
 
     logger.info(f"🔥 Using device: {device}")
 
-
-    # load pretrained backbone weights
+    # load pretrained backbone
     if cfg.BACKBONE.PRETRAINED:
-        cur_path = os.path.dirname(os.path.realpath(__file__))
-        if cfg.BACKBONE.PRETRAINED:
-    # Nếu bạn biết chính xác đường dẫn tuyệt đối đến model
-            backbone_path = "/kaggle/input/mobilenetv2/model.pth"  # chỉnh theo vị trí thực tế
+        backbone_path = "/kaggle/input/mobilenetv2/model.pth"
         if os.path.exists(backbone_path) and os.path.getsize(backbone_path) > 0:
             load_pretrain(model.backbone, backbone_path)
         else:
             raise FileNotFoundError(f"Pretrained model not found or empty: {backbone_path}")
 
-
-    # create tensorboard writer
     if rank == 0 and cfg.TRAIN.LOG_DIR:
         tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)
     else:
         tb_writer = None
 
-    # build dataset loader
     train_loader = build_data_loader()
 
-    # build optimizer and lr_scheduler
-    optimizer, lr_scheduler = build_opt_lr(model,
-                                           cfg.TRAIN.START_EPOCH)
+    optimizer, lr_scheduler = build_opt_lr(model, cfg.TRAIN.START_EPOCH)
 
-    # resume training
     if cfg.TRAIN.RESUME:
         logger.info("resume from {}".format(cfg.TRAIN.RESUME))
         assert os.path.isfile(cfg.TRAIN.RESUME), \
             '{} is not a valid file.'.format(cfg.TRAIN.RESUME)
         model, optimizer, cfg.TRAIN.START_EPOCH = \
             restore_from(model, optimizer, cfg.TRAIN.RESUME)
-    # load pretrain
     elif cfg.TRAIN.PRETRAINED:
         load_pretrain(model, cfg.TRAIN.PRETRAINED)
+
     dist_model = DistModule(model)
 
     logger.info(lr_scheduler)
     logger.info("model prepare done")
 
-    # start training
     train(train_loader, dist_model, optimizer, lr_scheduler, tb_writer)
 
 
