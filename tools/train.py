@@ -90,7 +90,7 @@ def build_data_loader():
 
     train_dataset = ProcessedDataset(
         samples_root="/kaggle/working/processed_dataset/samples",
-        ann_path="/kaggle/input/processed_dataset/annotatin-new/annotations_new.json"
+        ann_path="/kaggle/input/annotatin-new/annotations_new.json"
     )
 
     logger.info(f"Number of samples in dataset: {len(train_dataset)}")
