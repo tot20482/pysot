@@ -59,7 +59,7 @@ def build_data_loader():
     
     train_dataset = TrkDataset(
         samples_root="/kaggle/working/processed_dataset/samples",
-        ann_path="/kaggle/working/processed_dataset/annotations/annotations_new.json"
+        ann_path="/kaggle/input/processed_dataset/annotatin-new/annotations_new.json"
     )
 
     
