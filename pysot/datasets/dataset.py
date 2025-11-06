@@ -203,21 +203,17 @@ class TrkDataset(Dataset):
         }
 
 
-def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset", max_samples=1000):
-    """
-    Preprocess and save dataset samples into numpy files.
-    Args:
-        dataset: Instance của TrkDataset
-        save_dir: Folder để lưu file .npz
-        max_samples: Số lượng sample muốn lưu (tránh tốn dung lượng)
-    """
+def save_processed_dataset(dataset, save_dir, max_samples=1000):
     os.makedirs(save_dir, exist_ok=True)
     logger.info(f"Start saving processed dataset to {save_dir} ...")
 
     for i in range(min(len(dataset), max_samples)):
         data = dataset[i]
+        video_id = data['video_id']
+        npz_filename = os.path.join(save_dir, f"{video_id}.npz")
+
         np.savez_compressed(
-            os.path.join(save_dir, f"sample_{i:06d}.npz"),
+            npz_filename,
             templates=data['templates'],
             search=data['search'],
             label_cls=data['label_cls'],
@@ -225,76 +221,78 @@ def save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset"
             label_loc_weight=data.get('label_loc_weight'),
             bbox=data.get('bbox')
         )
+
         if i % 100 == 0 and i > 0:
             logger.info(f"Saved {i}/{max_samples} samples...")
 
     logger.info("✅ Done saving processed dataset!")
 
-def convert_annotations(input_file, output_file):
+
+# Đường dẫn đến file annotation nguồn (dạng mới)
+SOURCE_ANNOT_PATH = "/kaggle/input/annotation/output.json"
+
+# Đường dẫn đến thư mục chứa file .npz đã xử lý
+SAMPLES_ROOT = "/kaggle/working/processed_dataset/"
+
+# Đường dẫn lưu annotation dạng mới
+TARGET_ANNOT_PATH = "/kaggle/working/processed_dataset/annotations.json"
+
+
+def load_source_annotations(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def find_npz_filename(frame_id, samples_root):
+    """Tìm file npz theo frame id, ví dụ: frame 3483 → sample_003483.npz"""
+    # Nếu không có zero-padding trong file .npz, sửa ở đây
+    file_name = f"sample_{frame_id:06d}.npz"
+    file_path = os.path.join(samples_root, file_name)
+    return file_name if os.path.exists(file_path) else None
+
+
+def convert_annotations(ann_input_file, output_ann_file):
     """
-    Convert annotation JSON to PySOT required format:
-    Format cũ: {video_id: {frame: [x1,y1,x2,y2]}}
-    Format mới: [{"video_id":..., "annotations":[{"bboxes":[{"frame":..., "x1":..., ...}]}]}]
-    Kết quả luôn là: {video_id: {frame: [x1, y1, x2, y2]}}
+    Convert annotation JSON source (many objects, many frames) to target format:
+    Each video -> {
+        "video_id": "Backpack_0",
+        "annotations": [{ "bboxes": [ ... ] }] 
+    }
     """
-    import json
-    import os
-    import logging
+    with open(ann_input_file, 'r') as f:
+        src_annos = json.load(f)
 
-    logger = logging.getLogger("convert_annotations")
-    logger.info(f"Loading annotation file: {input_file}")
+    target_annos = []
 
-    with open(input_file, "r") as f:
-        data = json.load(f)
+    print(f"📂 Tổng số video sample tìm thấy: {len(src_annos)}\n")
 
-    merged = {}
+    for video_id, obj_info in src_annos.items():
+        print(f"🔍 Xử lý video: {video_id}")
+        video_ann = {"video_id": video_id, "annotations": []}
 
-    # Format cũ: dict video_id -> {frame -> bbox}
-    if isinstance(data, dict):
-        # Kiểm tra xem giá trị của key là dict frame->bbox hay là list block annotations
-        sample_value = next(iter(data.values()))
-        if isinstance(sample_value, dict) and all(isinstance(v, list) and len(v)==4 for v in sample_value.values()):
-            logger.info("Detected OLD annotation format (frame->bbox)")
-            merged = data  # Đã đúng format PySOT
-        else:
-            # Format mới
-            logger.info("Detected NEW annotation format (video_id + annotations)")
-            for ann in data if isinstance(data, list) else [data]:
-                video_id = ann.get("video_id")
-                if not video_id:
-                    logger.warning(f"⚠️ Missing 'video_id', skipping entry: {ann}")
-                    continue
-                frames = {}
-                ann_list = ann.get("annotations", [])
-                for block in ann_list:
-                    for bbox in block.get("bboxes", []):
-                        frame = str(bbox.get("frame", -1))
-                        if frame == "-1":
-                            continue
-                        frames[frame] = [
-                            bbox.get("x1", 0),
-                            bbox.get("y1", 0),
-                            bbox.get("x2", 0),
-                            bbox.get("y2", 0)
-                        ]
-                if frames:
-                    merged[video_id] = frames
-    # Format list nhưng không có video_id? -> cảnh báo
-    elif isinstance(data, list):
-        logger.warning("⚠️ Annotation list format detected but missing 'video_id' keys")
-    else:
-        raise ValueError(f"Unsupported annotation format: {type(data)}")
+        for obj_label, frames in obj_info.items():
+            bbox_list = []
+            for frame_str, bbox in frames.items():
+                x1, y1, x2, y2 = bbox
+                bbox_list.append({
+                    "frame": int(frame_str),
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2
+                })
+            video_ann["annotations"].append({
+                "object": obj_label,
+                "bboxes": bbox_list
+            })
 
-    # Lưu file kết quả
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    with open(output_file, "w") as f:
-        json.dump(merged, f, indent=2)
+        target_annos.append(video_ann)
 
-    logger.info(f"✅ Conversion done! Saved to: {output_file}")
-    logger.info(f"📌 Total videos processed: {len(merged)}")
-    return output_file
+    os.makedirs(os.path.dirname(output_ann_file), exist_ok=True)
+    with open(output_ann_file, "w") as f_out:
+        json.dump(target_annos, f_out, indent=4)
 
-
+    print(f"✅ Đã lưu annotation convert tại: {output_ann_file}\n")
 
 
 def main():
@@ -310,13 +308,17 @@ def main():
 
     # === ✅ STEP 2: Init dataset ===
     dataset = TrkDataset(
-        samples_root="/kaggle/input/zaloai2025-aeroeyes/observing/train/samples",
-        ann_path=ann_output_file
+        samples_root="D:/ZaloAI/pysot/training_dataset/observing/train",
+        ann_path=ann_output_file,
+        num_templates=3,
+        frame_step=1
     )
     
     # === ✅ STEP 3: Save processed samples ===
-    save_processed_dataset(dataset, save_dir="/kaggle/working/processed_dataset/samples", max_samples=1000)
+    save_dir = "/kaggle/working/processed_dataset/samples"
+    save_processed_dataset(dataset, save_dir=save_dir, max_samples=1000)
 
+    print("\n🎉 Hoàn tất xử lý dữ liệu!\n")
 
 
 if __name__ == "__main__":
