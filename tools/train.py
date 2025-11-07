@@ -19,7 +19,6 @@ from pysot.utils.distributed import get_rank, get_world_size, reduce_gradients, 
 from pysot.utils.model_load import load_pretrain, restore_from
 from pysot.utils.average_meter import AverageMeter
 from pysot.models.model_builder import ModelBuilder
-from pysot.utils.distributed import is_dist_avail_and_initialized
 from pysot.core.config import cfg
 from tensorboardX import SummaryWriter
 
