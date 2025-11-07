@@ -13,10 +13,13 @@ from torch.utils.data import DataLoader, Dataset
 import argparse
 
 from pysot.utils.lr_scheduler import build_lr_scheduler
+from torch.utils.data.distributed import DistributedSampler
+
 from pysot.utils.distributed import get_rank, get_world_size, reduce_gradients, average_reduce, dist_init, DistModule
 from pysot.utils.model_load import load_pretrain, restore_from
 from pysot.utils.average_meter import AverageMeter
 from pysot.models.model_builder import ModelBuilder
+from pysot.utils.distributed import is_dist_avail_and_initialized
 from pysot.core.config import cfg
 from tensorboardX import SummaryWriter
 
@@ -61,22 +64,42 @@ def seed_torch(seed=0):
     torch.backends.cudnn.benchmark = False
 
 
-# -------------------- Build dataloader --------------------
+def is_dist_avail_and_initialized():
+    """Kiểm tra xem PyTorch distributed có khả dụng và đã được khởi tạo chưa."""
+    if not torch.distributed.is_available():
+        return False
+    if not torch.distributed.is_initialized():
+        return False
+    return True
+
+
 def build_data_loader(samples_root, ann_path, batch_size, num_workers):
     dataset = ProcessedDataset(samples_root, ann_path)
+
     sampler = None
-    if get_world_size() > 1:
-        from torch.utils.data.distributed import DistributedSampler
-        sampler = DistributedSampler(dataset)
+    # ✅ Chỉ sử dụng DistributedSampler nếu đã init dist và có >1 GPU
+    if is_dist_avail_and_initialized():
+        try:
+            world_size = get_world_size()
+            if world_size > 1:
+                sampler = DistributedSampler(dataset)
+                print(f"🧩 Using DistributedSampler with {world_size} processes")
+        except Exception as e:
+            print(f"⚠️ Distributed check failed, using single-process loader: {e}")
+
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
         sampler=sampler,
+        shuffle=(sampler is None),  # ✅ Nếu không dùng sampler thì shuffle=True
         drop_last=True,
     )
+
+    print(f"✅ DataLoader built with {len(dataset)} samples, batch_size={batch_size}")
     return loader
+
 
 
 # -------------------- Optimizer --------------------
