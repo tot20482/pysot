@@ -18,10 +18,14 @@ from pysot.core.config import cfg
 from tensorboardX import SummaryWriter
 
 # -------------------- Dataset cho .npz PySOT --------------------
+# -------------------- Dataset cho .npz PySOT --------------------
 class ProcessedNPZDataset(Dataset):
     def __init__(self, samples_root):
         self.samples_root = samples_root
-        self.samples = [os.path.join(samples_root, f) for f in os.listdir(samples_root) if f.endswith(".npz")]
+        self.samples = [
+            os.path.join(samples_root, f) 
+            for f in os.listdir(samples_root) if f.endswith(".npz")
+        ]
         print(f"[Dataset] Loaded {len(self.samples)} samples")
 
     def __len__(self):
@@ -32,12 +36,14 @@ class ProcessedNPZDataset(Dataset):
         sample = {
             "templates": torch.tensor(data["templates"], dtype=torch.float32),
             "search": torch.tensor(data["search"], dtype=torch.float32),
-            "label_cls": torch.tensor(data["label_cls"], dtype=torch.float32),
+            # Chuyển label_cls sang LongTensor
+            "label_cls": torch.tensor(data["label_cls"], dtype=torch.long),
             "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
             "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
             "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
         }
         return sample
+
 
 # -------------------- Seed --------------------
 def seed_torch(seed=0):
