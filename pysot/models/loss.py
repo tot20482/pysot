@@ -10,8 +10,7 @@ import torch.nn.functional as F
 
 
 def get_cls_loss(pred, label, select):
-    if len(select.size()) == 0 or \
-            select.size() == torch.Size([0]):
+    if len(select.size()) == 0 or select.size() == torch.Size([0]):
         return 0
     pred = torch.index_select(pred, 0, select)
     label = torch.index_select(label, 0, select)
@@ -21,10 +20,15 @@ def get_cls_loss(pred, label, select):
 def select_cross_entropy_loss(pred, label):
     pred = pred.view(-1, 2)
     label = label.view(-1)
-    pos = label.data.eq(1).nonzero().squeeze().cuda()
-    neg = label.data.eq(0).nonzero().squeeze().cuda()
+
+    device = label.device  # sử dụng cùng device với label
+
+    pos = label.eq(1).nonzero(as_tuple=False).squeeze().to(device)
+    neg = label.eq(0).nonzero(as_tuple=False).squeeze().to(device)
+
     loss_pos = get_cls_loss(pred, label, pos)
     loss_neg = get_cls_loss(pred, label, neg)
+
     return loss_pos * 0.5 + loss_neg * 0.5
 
 
