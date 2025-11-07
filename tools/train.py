@@ -30,13 +30,14 @@ class ProcessedNPZDataset(Dataset):
     def __getitem__(self, idx):
         data = np.load(self.samples[idx])
         sample = {
-            "template": torch.tensor(data["templates"], dtype=torch.float32),
+            "templates": torch.tensor(data["templates"], dtype=torch.float32),  # plural
             "search": torch.tensor(data["search"], dtype=torch.float32),
             "label_cls": torch.tensor(data["label_cls"], dtype=torch.float32),
             "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
             "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
             "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
         }
+
         return sample
 
 # -------------------- Seed --------------------
