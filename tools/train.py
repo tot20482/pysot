@@ -30,14 +30,13 @@ class ProcessedNPZDataset(Dataset):
     def __getitem__(self, idx):
         data = np.load(self.samples[idx])
         sample = {
-            "templates": torch.tensor(data["templates"], dtype=torch.float32),  # plural
+            "templates": torch.tensor(data["templates"], dtype=torch.float32),
             "search": torch.tensor(data["search"], dtype=torch.float32),
             "label_cls": torch.tensor(data["label_cls"], dtype=torch.float32),
             "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
             "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
             "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
         }
-
         return sample
 
 # -------------------- Seed --------------------
@@ -50,31 +49,22 @@ def seed_torch(seed=0):
     torch.backends.cudnn.benchmark = False
 
 def is_dist_avail_and_initialized():
-    if not torch.distributed.is_available():
-        return False
-    if not torch.distributed.is_initialized():
-        return False
-    return True
+    return torch.distributed.is_available() and torch.distributed.is_initialized()
 
 def get_train_info():
     """Return rank and world_size, compatible CPU / single GPU / multi GPU"""
     if is_dist_avail_and_initialized():
-        rank = get_rank()
-        world_size = get_world_size()
+        return get_rank(), get_world_size()
     else:
-        rank, world_size = 0, 1
-    return rank, world_size
+        return 0, 1
 
 # -------------------- DataLoader --------------------
 def build_data_loader_npz(samples_root, batch_size, num_workers):
     dataset = ProcessedNPZDataset(samples_root)
-
     sampler = None
-    if is_dist_avail_and_initialized():
-        world_size = get_world_size()
-        if world_size > 1:
-            sampler = DistributedSampler(dataset)
-            print(f"🧩 Using DistributedSampler with {world_size} processes")
+    if is_dist_avail_and_initialized() and get_world_size() > 1:
+        sampler = DistributedSampler(dataset)
+        print(f"🧩 Using DistributedSampler with {get_world_size()} processes")
 
     loader = DataLoader(
         dataset,
@@ -108,17 +98,14 @@ def build_opt_lr(model):
         weight_decay=cfg.TRAIN.WEIGHT_DECAY
     )
     lr_scheduler = build_lr_scheduler(optimizer, epochs=cfg.TRAIN.EPOCH)
-    lr_scheduler.step(cfg.TRAIN.START_EPOCH)
     return optimizer, lr_scheduler
 
 # -------------------- Training loop --------------------
-def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device):
     model = model.to(device)
     model.train()
-
     rank, world_size = get_train_info()
-    num_per_epoch = len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size)
+    num_per_epoch = max(len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size), 1)
     epoch = cfg.TRAIN.START_EPOCH
     average_meter = AverageMeter()
 
@@ -134,8 +121,8 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer):
         loss.backward()
         reduce_gradients(model)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
-        optimizer.step()         # ✅ step optimizer trước
-        lr_scheduler.step()      # ✅ step scheduler sau optimizer
+        optimizer.step()          # step optimizer trước
+        lr_scheduler.step()       # step scheduler sau optimizer
 
         batch_info = {k: average_reduce(v.item()) for k, v in outputs.items()}
         average_meter.update(**batch_info)
@@ -162,14 +149,13 @@ def main():
     parser.add_argument("--cfg", type=str, required=True, help="Path to config.yaml")
     args = parser.parse_args()
 
-    has_gpu = torch.cuda.is_available() and torch.cuda.device_count() > 0
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    has_gpu = device.type == "cuda"
     if has_gpu:
         rank, world_size = dist_init()
-        device = torch.device("cuda")
         print(f"🔥 Using {torch.cuda.device_count()} GPU(s)")
     else:
         rank, world_size = 0, 1
-        device = torch.device("cpu")
         print("⚙️  No GPU detected — training on CPU")
 
     seed_torch(42)
@@ -201,7 +187,7 @@ def main():
     else:
         print("✅ Using single-device training")
 
-    train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer)
+    train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device)
 
 
 if __name__ == "__main__":
