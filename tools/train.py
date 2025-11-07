@@ -107,10 +107,11 @@ def build_opt_lr(model):
     return optimizer, lr_scheduler
 
 # -------------------- Training loop --------------------
+# -------------------- Training loop --------------------
 def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device):
     model = model.to(device)
     model.train()
-    rank, world_size = get_train_info()
+    rank, world_size = get_train_info()  # lấy rank và world_size
     num_per_epoch = max(len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size), 1)
     epoch = cfg.TRAIN.START_EPOCH
     average_meter = AverageMeter()
@@ -125,7 +126,11 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device):
 
         optimizer.zero_grad()
         loss.backward()
-        reduce_gradients(model)
+
+        # Chỉ reduce gradients nếu world_size > 1
+        if world_size > 1:
+            reduce_gradients(model)
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
         optimizer.step()          # step optimizer trước
         lr_scheduler.step()       # step scheduler sau optimizer
@@ -148,6 +153,7 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device):
                 torch.save(ckpt, os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f"checkpoint_e{epoch}.pth"))
             if epoch >= cfg.TRAIN.EPOCH:
                 break
+
 
 # -------------------- Main --------------------
 def main():
