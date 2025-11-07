@@ -13,7 +13,7 @@ cfg = __C
 
 __C.META_ARC = "siamrpn_r50_l234_dwxcorr"
 
-__C.CUDA = True
+__C.CUDA = False
 
 # ------------------------------------------------------------------------ #
 # Training options
