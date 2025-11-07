@@ -1,6 +1,5 @@
 import os
 import random
-import time
 from tqdm import tqdm
 
 import numpy as np
@@ -56,6 +55,15 @@ def is_dist_avail_and_initialized():
         return False
     return True
 
+def get_train_info():
+    """Return rank and world_size, compatible CPU / single GPU / multi GPU"""
+    if is_dist_avail_and_initialized():
+        rank = get_rank()
+        world_size = get_world_size()
+    else:
+        rank, world_size = 0, 1
+    return rank, world_size
+
 # -------------------- DataLoader --------------------
 def build_data_loader_npz(samples_root, batch_size, num_workers):
     dataset = ProcessedNPZDataset(samples_root)
@@ -108,8 +116,7 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer):
     model = model.to(device)
     model.train()
 
-    rank = get_rank()
-    world_size = get_world_size()
+    rank, world_size = get_train_info()
     num_per_epoch = len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size)
     epoch = cfg.TRAIN.START_EPOCH
     average_meter = AverageMeter()
@@ -118,6 +125,7 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer):
 
     for idx, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.TRAIN.EPOCH}")):
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
+
         outputs = model(data)
         loss = outputs["total_loss"]
 
@@ -125,8 +133,8 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer):
         loss.backward()
         reduce_gradients(model)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
-        optimizer.step()
-        lr_scheduler.step()
+        optimizer.step()         # ✅ step optimizer trước
+        lr_scheduler.step()      # ✅ step scheduler sau optimizer
 
         batch_info = {k: average_reduce(v.item()) for k, v in outputs.items()}
         average_meter.update(**batch_info)
@@ -177,7 +185,6 @@ def main():
         else:
             print("⚠️  Pretrained backbone not found")
 
-    # DataLoader .npz
     train_loader = build_data_loader_npz(
         samples_root="/kaggle/input/training-data/processed_dataset/samples",
         batch_size=cfg.TRAIN.BATCH_SIZE,
