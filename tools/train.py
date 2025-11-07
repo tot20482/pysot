@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+import argparse
 
 from pysot.utils.lr_scheduler import build_lr_scheduler
 from pysot.utils.distributed import get_rank, get_world_size, reduce_gradients, average_reduce, dist_init, DistModule
@@ -149,11 +150,13 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             if epoch >= cfg.TRAIN.EPOCH:
                 break
 
-
-# -------------------- Main --------------------
-# -------------------- Main --------------------
 def main():
-    # 🔹 Kiểm tra GPU
+    # -------------------- Parse config path --------------------
+    parser = argparse.ArgumentParser(description="Train SiamRPN model")
+    parser.add_argument("--cfg", type=str, required=True, help="Path to config.yaml")
+    args = parser.parse_args()
+
+    # -------------------- Kiểm tra GPU --------------------
     has_gpu = torch.cuda.is_available() and torch.cuda.device_count() > 0
     if has_gpu:
         rank, world_size = dist_init()
@@ -165,11 +168,14 @@ def main():
         print("⚙️  No GPU detected — training on CPU")
 
     seed_torch(42)
-    cfg.merge_from_file("config.yaml")
 
+    # -------------------- Đọc file config đúng đường dẫn --------------------
+    print(f"📂 Loading config from: {args.cfg}")
+    cfg.merge_from_file(args.cfg)
+
+    # -------------------- Build model --------------------
     model = ModelBuilder().to(device).train()
 
-    # Load pretrained backbone nếu có
     if cfg.BACKBONE.PRETRAINED:
         backbone_path = "/kaggle/input/mobilenetv2/model.pth"
         if os.path.exists(backbone_path):
@@ -177,7 +183,7 @@ def main():
         else:
             print("⚠️  Pretrained backbone not found")
 
-    # Build dataloader
+    # -------------------- DataLoader --------------------
     train_loader = build_data_loader(
         samples_root="/kaggle/input/training-data/processed_dataset/samples",
         ann_path="/kaggle/input/training-data/processed_dataset/annotations/annotations.json",
@@ -188,7 +194,6 @@ def main():
     optimizer, lr_scheduler = build_opt_lr(model, cfg.TRAIN.START_EPOCH)
     tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)
 
-    # 🔹 Nếu có GPU → dùng DistModule, nếu không → train trực tiếp
     if has_gpu and world_size > 1:
         model = DistModule(model)
         print("✅ Using distributed training")
@@ -200,4 +205,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
