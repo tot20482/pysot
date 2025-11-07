@@ -1,9 +1,6 @@
 import os
-import json
 import random
-import math
 import time
-import logging
 from tqdm import tqdm
 
 import numpy as np
@@ -14,44 +11,34 @@ import argparse
 
 from pysot.utils.lr_scheduler import build_lr_scheduler
 from torch.utils.data.distributed import DistributedSampler
-
 from pysot.utils.distributed import get_rank, get_world_size, reduce_gradients, average_reduce, dist_init, DistModule
-from pysot.utils.model_load import load_pretrain, restore_from
+from pysot.utils.model_load import load_pretrain
 from pysot.utils.average_meter import AverageMeter
 from pysot.models.model_builder import ModelBuilder
 from pysot.core.config import cfg
 from tensorboardX import SummaryWriter
 
-
-# -------------------- Dataset --------------------
-class ProcessedDataset(Dataset):
-    def __init__(self, samples_root, ann_path):
+# -------------------- Dataset cho .npz PySOT --------------------
+class ProcessedNPZDataset(Dataset):
+    def __init__(self, samples_root):
         self.samples_root = samples_root
-        with open(ann_path, 'r') as f:
-            self.annotations = json.load(f)
-
-        self.samples = []
-        for vid, frames in self.annotations.items():
-            for frame_id, bbox in frames.items():
-                sample_file = os.path.join(samples_root, f"{vid}_f{frame_id}.npz")
-                if os.path.exists(sample_file):
-                    self.samples.append({
-                        "sample_file": sample_file,
-                        "bbox": bbox
-                    })
+        self.samples = [os.path.join(samples_root, f) for f in os.listdir(samples_root) if f.endswith(".npz")]
         print(f"[Dataset] Loaded {len(self.samples)} samples")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        entry = self.samples[idx]
-        data = np.load(entry["sample_file"])
-        template = torch.tensor(data["template"], dtype=torch.float32)
-        search = torch.tensor(data["search"], dtype=torch.float32)
-        bbox = torch.tensor(entry["bbox"], dtype=torch.float32)
-        return {"template": template, "search": search, "bbox": bbox}
-
+        data = np.load(self.samples[idx])
+        sample = {
+            "template": torch.tensor(data["templates"], dtype=torch.float32),
+            "search": torch.tensor(data["search"], dtype=torch.float32),
+            "label_cls": torch.tensor(data["label_cls"], dtype=torch.float32),
+            "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
+            "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
+            "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
+        }
+        return sample
 
 # -------------------- Seed --------------------
 def seed_torch(seed=0):
@@ -62,29 +49,23 @@ def seed_torch(seed=0):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-
 def is_dist_avail_and_initialized():
-    """Kiểm tra xem PyTorch distributed có khả dụng và đã được khởi tạo chưa."""
     if not torch.distributed.is_available():
         return False
     if not torch.distributed.is_initialized():
         return False
     return True
 
-
-def build_data_loader(samples_root, ann_path, batch_size, num_workers):
-    dataset = ProcessedDataset(samples_root, ann_path)
+# -------------------- DataLoader --------------------
+def build_data_loader_npz(samples_root, batch_size, num_workers):
+    dataset = ProcessedNPZDataset(samples_root)
 
     sampler = None
-    # ✅ Chỉ sử dụng DistributedSampler nếu đã init dist và có >1 GPU
     if is_dist_avail_and_initialized():
-        try:
-            world_size = get_world_size()
-            if world_size > 1:
-                sampler = DistributedSampler(dataset)
-                print(f"🧩 Using DistributedSampler with {world_size} processes")
-        except Exception as e:
-            print(f"⚠️ Distributed check failed, using single-process loader: {e}")
+        world_size = get_world_size()
+        if world_size > 1:
+            sampler = DistributedSampler(dataset)
+            print(f"🧩 Using DistributedSampler with {world_size} processes")
 
     loader = DataLoader(
         dataset,
@@ -92,18 +73,14 @@ def build_data_loader(samples_root, ann_path, batch_size, num_workers):
         num_workers=num_workers,
         pin_memory=True,
         sampler=sampler,
-        shuffle=(sampler is None),  # ✅ shuffle nếu không dùng sampler
+        shuffle=(sampler is None),
         drop_last=True,
     )
-
     print(f"✅ DataLoader built with {len(dataset)} samples, batch_size={batch_size}")
     return loader
 
-
-
-
 # -------------------- Optimizer --------------------
-def build_opt_lr(model, current_epoch=0):
+def build_opt_lr(model):
     for param in model.backbone.parameters():
         param.requires_grad = False
     for m in model.backbone.modules():
@@ -125,9 +102,8 @@ def build_opt_lr(model, current_epoch=0):
     lr_scheduler.step(cfg.TRAIN.START_EPOCH)
     return optimizer, lr_scheduler
 
-
 # -------------------- Training loop --------------------
-def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
+def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.train()
@@ -135,8 +111,7 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
     rank = get_rank()
     world_size = get_world_size()
     num_per_epoch = len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size)
-    start_epoch = cfg.TRAIN.START_EPOCH
-    epoch = start_epoch
+    epoch = cfg.TRAIN.START_EPOCH
     average_meter = AverageMeter()
 
     os.makedirs(cfg.TRAIN.SNAPSHOT_DIR, exist_ok=True)
@@ -151,8 +126,8 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
         reduce_gradients(model)
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
         optimizer.step()
+        lr_scheduler.step()
 
-        # Logging
         batch_info = {k: average_reduce(v.item()) for k, v in outputs.items()}
         average_meter.update(**batch_info)
 
@@ -160,26 +135,24 @@ def train(train_loader, model, optimizer, lr_scheduler, tb_writer):
             for k, v in batch_info.items():
                 tb_writer.add_scalar(k, v, idx)
 
-        # Save checkpoints at each epoch
         if (idx + 1) % num_per_epoch == 0:
             epoch += 1
-            if get_rank() == 0:
+            if rank == 0:
                 ckpt = {
                     "epoch": epoch,
-                    "state_dict": model.module.state_dict(),
+                    "state_dict": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                 }
                 torch.save(ckpt, os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f"checkpoint_e{epoch}.pth"))
             if epoch >= cfg.TRAIN.EPOCH:
                 break
 
+# -------------------- Main --------------------
 def main():
-    # -------------------- Parse config path --------------------
     parser = argparse.ArgumentParser(description="Train SiamRPN model")
     parser.add_argument("--cfg", type=str, required=True, help="Path to config.yaml")
     args = parser.parse_args()
 
-    # -------------------- Kiểm tra GPU --------------------
     has_gpu = torch.cuda.is_available() and torch.cuda.device_count() > 0
     if has_gpu:
         rank, world_size = dist_init()
@@ -192,11 +165,9 @@ def main():
 
     seed_torch(42)
 
-    # -------------------- Đọc file config đúng đường dẫn --------------------
     print(f"📂 Loading config from: {args.cfg}")
     cfg.merge_from_file(args.cfg)
 
-    # -------------------- Build model --------------------
     model = ModelBuilder().to(device).train()
 
     if cfg.BACKBONE.PRETRAINED:
@@ -206,15 +177,14 @@ def main():
         else:
             print("⚠️  Pretrained backbone not found")
 
-    # -------------------- DataLoader --------------------
-    train_loader = build_data_loader(
+    # DataLoader .npz
+    train_loader = build_data_loader_npz(
         samples_root="/kaggle/input/training-data/processed_dataset/samples",
-        ann_path="/kaggle/input/training-data/processed_dataset/annotations/annotations.json",
         batch_size=cfg.TRAIN.BATCH_SIZE,
         num_workers=cfg.TRAIN.NUM_WORKERS
     )
 
-    optimizer, lr_scheduler = build_opt_lr(model, cfg.TRAIN.START_EPOCH)
+    optimizer, lr_scheduler = build_opt_lr(model)
     tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)
 
     if has_gpu and world_size > 1:
@@ -223,7 +193,7 @@ def main():
     else:
         print("✅ Using single-device training")
 
-    train(train_loader, model, optimizer, lr_scheduler, tb_writer)
+    train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer)
 
 
 if __name__ == "__main__":
