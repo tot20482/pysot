@@ -93,12 +93,13 @@ def build_data_loader(samples_root, ann_path, batch_size, num_workers):
         num_workers=num_workers,
         pin_memory=True,
         sampler=sampler,
-        shuffle=(sampler is None),  # ✅ Nếu không dùng sampler thì shuffle=True
+        shuffle=(sampler is None),  # ✅ shuffle nếu không dùng sampler
         drop_last=True,
     )
 
     print(f"✅ DataLoader built with {len(dataset)} samples, batch_size={batch_size}")
     return loader
+
 
 
 
