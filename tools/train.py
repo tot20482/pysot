@@ -24,23 +24,24 @@ from pysot.core.config import cfg
 from tensorboardX import SummaryWriter
 
 # -------------------- Dataset --------------------
-# -------------------- Dataset --------------------
 class ProcessedNPZDataset(Dataset):
-    def __init__(self, samples_root):
+    def __init__(self, samples_root, max_label=1):
         self.samples_root = samples_root
         self.samples = [
             os.path.join(samples_root, f) for f in os.listdir(samples_root) if f.endswith(".npz")
         ]
+        self.max_label = max_label
         print(f"[Dataset] Loaded {len(self.samples)} samples")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        data = np.load(self.samples[idx])
-        
-        # Fix label_cls
-        label_cls = np.clip(data["label_cls"], 0, 1).astype(np.int64)
+        path = self.samples[idx]
+        data = np.load(path)
+
+        # Clip labels
+        label_cls = np.clip(data["label_cls"], 0, self.max_label).astype(np.int64)
 
         templates = torch.tensor(data["templates"], dtype=torch.float32)
         search = torch.tensor(data["search"], dtype=torch.float32)
@@ -49,9 +50,25 @@ class ProcessedNPZDataset(Dataset):
         bbox = torch.tensor(data["bbox"], dtype=torch.float32)
 
         # Check NaN/Inf
+        invalid = False
         for t in [templates, search, label_loc, label_loc_weight, bbox]:
             if torch.isnan(t).any() or torch.isinf(t).any():
-                print(f"⚠️ NaN/Inf detected in file: {self.samples[idx]}")
+                print(f"⚠️ NaN/Inf detected in file: {path}")
+                invalid = True
+
+        # Check label_cls
+        if label_cls.min() < 0 or label_cls.max() > self.max_label:
+            print(f"⚠️ label_cls out of range in file: {path} | min={label_cls.min()}, max={label_cls.max()}")
+            invalid = True
+
+        if invalid:
+            # Replace with zeros to avoid crash
+            templates.zero_()
+            search.zero_()
+            label_loc.zero_()
+            label_loc_weight.zero_()
+            bbox.zero_()
+            label_cls[:] = 0
 
         return {
             "templates": templates,
@@ -61,7 +78,6 @@ class ProcessedNPZDataset(Dataset):
             "label_loc_weight": label_loc_weight,
             "bbox": bbox,
         }
-
 
 # -------------------- Seed --------------------
 def seed_torch(seed=42):
@@ -73,8 +89,8 @@ def seed_torch(seed=42):
     torch.backends.cudnn.benchmark = False
 
 # -------------------- DataLoader --------------------
-def build_data_loader_npz(samples_root, batch_size, num_workers):
-    dataset = ProcessedNPZDataset(samples_root)
+def build_data_loader_npz(samples_root, batch_size, num_workers, max_label=1):
+    dataset = ProcessedNPZDataset(samples_root, max_label=max_label)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -109,7 +125,7 @@ def build_opt_lr(model):
     return optimizer, lr_scheduler
 
 # -------------------- Training loop --------------------
-def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size):
+def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size, max_label=1):
     model = model.to(device)
     model.train()
     rank = get_rank() if world_size > 1 else 0
@@ -117,16 +133,16 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
 
     # Debug device-side assert
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    torch.autograd.set_detect_anomaly(True)
 
     for idx, data in enumerate(tqdm(train_loader, desc="Training")):
         # Move to device
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
 
-        # Debug: check label_cls
-        unique_labels = torch.unique(data["label_cls"])
-        if unique_labels.max() > 1 or unique_labels.min() < 0:
-            print(f"⚠️ Invalid label in batch {idx}: {unique_labels.tolist()}")
-            continue  # skip batch lỗi
+        # Skip batch label invalid
+        if data["label_cls"].max() > max_label:
+            print(f"⚠️ Skipping batch {idx} due to invalid labels: {torch.unique(data['label_cls'])}")
+            continue
 
         # Skip batch toàn background (label=0)
         if data["label_cls"].max() < 1:
@@ -161,7 +177,8 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
         }
         torch.save(ckpt, final_ckpt_path)
         print(f"✅ Training completed. Final checkpoint saved: {final_ckpt_path}")
-        # -------------------- Dataset check --------------------
+
+# -------------------- Dataset check function --------------------
 def check_dataset(samples_root, max_label=1):
     print(f"📦 Checking dataset: {samples_root}")
     invalid_files = 0
@@ -171,18 +188,15 @@ def check_dataset(samples_root, max_label=1):
         path = os.path.join(samples_root, f)
         data = np.load(path)
         label_cls = np.clip(data["label_cls"], 0, max_label).astype(np.int64)
-        
-        # Check min/max
+
         min_label, max_label_batch = label_cls.min(), label_cls.max()
-        # Check NaN/Inf
-        nan_inf = any([np.isnan(data[k]).any() or np.isinf(data[k]).any() for k in ["templates", "search", "label_loc", "label_loc_weight", "bbox"]])
-        
+        nan_inf = any([np.isnan(data[k]).any() or np.isinf(data[k]).any() for k in ["templates","search","label_loc","label_loc_weight","bbox"]])
+
         if min_label < 0 or max_label_batch > max_label or nan_inf:
             invalid_files += 1
             print(f"⚠️ Invalid file: {f} | min: {min_label}, max: {max_label_batch}, NaN/Inf: {nan_inf}")
 
     print(f"✅ Dataset check done. Total files: {len(os.listdir(samples_root))}, Invalid: {invalid_files}")
-
 
 # -------------------- Main --------------------
 def main():
@@ -191,7 +205,6 @@ def main():
     parser.add_argument("--check_only", action="store_true", help="Only check dataset, do not train")
     args = parser.parse_args()
 
-    # Thiết bị
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     has_gpu = device.type == "cuda"
 
@@ -205,19 +218,7 @@ def main():
     print(f"📂 Loading config from: {args.cfg}")
     cfg.merge_from_file(args.cfg)
 
-    # Load model (chỉ cần kiểm tra dataset không cần model)
-    if not args.check_only:
-        model = ModelBuilder().to(device).train()
-
-        if cfg.BACKBONE.PRETRAINED:
-            backbone_path = "/content/drive/MyDrive/ZaloAI/model.pth"
-            if os.path.exists(backbone_path):
-                print(f"✅ Loading pretrained backbone from: {backbone_path}")
-                load_pretrain(model.backbone, backbone_path)
-            else:
-                print("⚠️  Pretrained backbone not found")
-
-    # Dataset
+    # Dataset path
     samples_root = "/content/drive/MyDrive/ZaloAI/processed_dataset/processed_dataset/samples"
     if not os.path.exists(samples_root):
         print(f"❌ Dataset path not found: {samples_root}")
@@ -225,18 +226,27 @@ def main():
     else:
         print(f"📦 Using dataset from: {samples_root}")
 
-    # -------------------- Kiểm tra dataset --------------------
-    check_dataset(samples_root)
-
-    # Nếu chỉ kiểm tra dataset thì dừng tại đây
+    # -------------------- Check dataset --------------------
+    check_dataset(samples_root, max_label=1)
     if args.check_only:
         return
 
-    # Tạo DataLoader
+    # Load model
+    model = ModelBuilder().to(device).train()
+    if cfg.BACKBONE.PRETRAINED:
+        backbone_path = "/content/drive/MyDrive/ZaloAI/model.pth"
+        if os.path.exists(backbone_path):
+            print(f"✅ Loading pretrained backbone from: {backbone_path}")
+            load_pretrain(model.backbone, backbone_path)
+        else:
+            print("⚠️  Pretrained backbone not found")
+
+    # DataLoader
     train_loader = build_data_loader_npz(
         samples_root=samples_root,
         batch_size=cfg.TRAIN.BATCH_SIZE,
         num_workers=cfg.TRAIN.NUM_WORKERS,
+        max_label=1
     )
 
     # Optimizer + Scheduler
@@ -250,8 +260,7 @@ def main():
         print("✅ Using single-device training")
 
     # Train
-    train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size)
-
+    train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size, max_label=1)
 
 
 if __name__ == "__main__":
