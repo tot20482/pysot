@@ -5,32 +5,27 @@ import logging
 import cv2
 import numpy as np
 from torch.utils.data import Dataset
-
 from pysot.datasets.augmentation import Augmentation
 from pysot.datasets.anchor_target import AnchorTarget
 from pysot.core.config import cfg
 from pysot.utils.bbox import center2corner, Center
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, filename="dataset_errors.log", filemode="w")
 logger = logging.getLogger("TrkDataset")
-logger = logging.getLogger("convert_annotations")
-
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+logger.addHandler(console)
 
 class TrkDataset(Dataset):
     def __init__(self, samples_root=None, ann_path=None, num_templates=3, frame_step=1):
-        super(TrkDataset, self).__init__()
-
-        if samples_root is None:
-            samples_root = "training_dataset/observing/train/samples"
-        self.samples_root = os.path.abspath(samples_root)
+        super().__init__()
+        self.samples_root = os.path.abspath(samples_root or "training_dataset/observing/train/samples")
         self.num_templates = num_templates
         self.frame_step = frame_step
 
-        # Load annotation
-        if ann_path is None:
-            ann_path = os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
-
+        # Load annotations
+        ann_path = ann_path or os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
         if os.path.exists(ann_path):
             with open(ann_path, 'r') as f:
                 self.annotations = json.load(f)
@@ -41,11 +36,11 @@ class TrkDataset(Dataset):
 
         # Sample folders
         self.sample_dirs = sorted([d for d in glob(os.path.join(self.samples_root, '*')) if os.path.isdir(d)])
-        if len(self.sample_dirs) == 0:
+        if not self.sample_dirs:
             raise RuntimeError(f"No sample directories found in {self.samples_root}")
-        logger.info(f"Found {len(self.sample_dirs)} sample directories in {self.samples_root}")
+        logger.info(f"Found {len(self.sample_dirs)} sample directories.")
 
-        # Augmentation
+        # Augmentations
         self.template_aug = Augmentation(
             cfg.DATASET.TEMPLATE.SHIFT,
             cfg.DATASET.TEMPLATE.SCALE,
@@ -62,13 +57,8 @@ class TrkDataset(Dataset):
         )
         logger.info("Augmentation setup complete.")
 
-        # Anchor target
         self.anchor_target = AnchorTarget()
-        logger.info("AnchorTarget setup completed.")
-
-        self.to_tensor = lambda x: x.transpose((2, 0, 1)).astype(np.float32)
-
-        # Number of samples
+        self.to_tensor = lambda x: x.transpose((2,0,1)).astype(np.float32)
         self.num = len(self.sample_dirs) * max(1, getattr(cfg.DATASET, 'VIDEOS_PER_EPOCH', 1))
         logger.info(f"Dataset initialized with {self.num} total samples.")
 
@@ -85,6 +75,8 @@ class TrkDataset(Dataset):
                 logger.warning(f"Cannot read template image: {p}")
                 continue
             imgs.append(img)
+        if not imgs:
+            imgs = [np.zeros((cfg.TRAIN.EXEMPLAR_SIZE, cfg.TRAIN.EXEMPLAR_SIZE, 3), dtype=np.uint8)] * self.num_templates
         while len(imgs) < self.num_templates:
             imgs.append(imgs[-1].copy())
         return imgs
@@ -95,22 +87,17 @@ class TrkDataset(Dataset):
             logger.warning(f"Cannot open video: {video_path}")
             return None, None, None
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-
         if ann_bboxes:
             frame_keys = [int(k) for k in ann_bboxes.keys()]
-            if len(frame_keys) == 0:
-                fidx = np.random.randint(0, frame_count)
-            else:
-                fidx = np.random.choice(frame_keys)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx - 1)
+            fidx = np.random.choice(frame_keys) if frame_keys else np.random.randint(0, frame_count)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx-1)
             ret, frame = cap.read()
             cap.release()
             if not ret:
                 logger.warning(f"Failed to read frame {fidx} from {video_path}")
                 return None, None, None
-            bbox = ann_bboxes.get(str(fidx)) or ann_bboxes.get(f"{fidx}")
+            bbox = ann_bboxes.get(str(fidx))
             return fidx, frame, bbox
-
         # Random frame
         fidx = np.random.randint(0, frame_count)
         cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
@@ -129,37 +116,34 @@ class TrkDataset(Dataset):
             b = list(map(float, b))
             if len(b) == 4:
                 x1, y1, x2, y2 = b
-                w = x2 - x1
-                h = y2 - y1
-                cx = x1 + w / 2.0
-                cy = y1 + h / 2.0
+                w, h = x2-x1, y2-y1
+                cx, cy = x1+w/2.0, y1+h/2.0
             else:
                 h_img, w_img = image.shape[:2]
-                cx, cy = w_img / 2.0, h_img / 2.0
-                w, h = w_img * 0.2, h_img * 0.2
+                cx, cy = w_img/2, h_img/2
+                w, h = w_img*0.2, h_img*0.2
             return center2corner(Center(int(cx), int(cy), int(w), int(h)))
         except Exception as e:
             logger.error(f"Error computing bbox: {e}")
             h_img, w_img = image.shape[:2]
-            cx, cy = w_img / 2.0, h_img / 2.0
-            w, h = w_img * 0.2, h_img * 0.2
+            cx, cy = w_img/2, h_img/2
+            w, h = w_img*0.2, h_img*0.2
             return center2corner(Center(int(cx), int(cy), int(w), int(h)))
 
     def __getitem__(self, index):
         sample_dir = self.sample_dirs[np.random.randint(0, len(self.sample_dirs))]
         sample_name = os.path.basename(sample_dir)
 
-        # Template
+        # Templates
         templates_np = self._load_templates(sample_dir)
         templates_proc = []
         for timg in templates_np:
             h, w = timg.shape[:2]
-            cx, cy = w // 2, h // 2
-            bw, bh = int(w * 0.5), int(h * 0.5)
+            cx, cy = w//2, h//2
+            bw, bh = int(w*0.5), int(h*0.5)
             center_box = center2corner(Center(cx, cy, bw, bh))
             tpl_crop, _ = self.template_aug(timg, center_box, cfg.TRAIN.EXEMPLAR_SIZE, gray=False)
-            tpl_crop = tpl_crop.astype(np.float32)
-            tpl_crop = cv2.cvtColor(tpl_crop, cv2.COLOR_BGR2RGB)
+            tpl_crop = cv2.cvtColor(tpl_crop.astype(np.float32), cv2.COLOR_BGR2RGB)
             templates_proc.append(self.to_tensor(tpl_crop))
         templates_t = np.stack(templates_proc, axis=0)
 
@@ -169,13 +153,14 @@ class TrkDataset(Dataset):
         frame_idx, search_frame, ann_bbox = self._sample_frame_from_video(video_path, ann_for_video)
 
         if search_frame is None:
+            search_t = np.zeros((3, cfg.TRAIN.SEARCH_SIZE, cfg.TRAIN.SEARCH_SIZE), dtype=np.float32)
             return {
                 'templates': templates_t,
-                'search': np.zeros((3, cfg.TRAIN.SEARCH_SIZE, cfg.TRAIN.SEARCH_SIZE), dtype=np.float32),
-                'label_cls': np.zeros((1,)),
-                'label_loc': np.zeros((1, 4)),
-                'label_loc_weight': np.zeros((1, 4)),
-                'bbox': np.array([0, 0, 0, 0])
+                'search': search_t,
+                'label_cls': np.array([0], dtype=np.int64),
+                'label_loc': np.zeros((1,4), dtype=np.float32),
+                'label_loc_weight': np.zeros((1,4), dtype=np.float32),
+                'bbox': np.zeros(4, dtype=np.float32)
             }
 
         search_box = self._compute_search_box_from_ann(search_frame, ann_bbox)
@@ -183,15 +168,23 @@ class TrkDataset(Dataset):
         search_t = self.to_tensor(cv2.cvtColor(search_crop.astype(np.float32), cv2.COLOR_BGR2RGB))
         cls, delta, delta_weight, overlap = self.anchor_target(bbox, cfg.TRAIN.OUTPUT_SIZE, neg=False)
 
+        # Clip label_cls
+        cls = np.clip(cls, 0, 1).astype(np.int64)
+
+        # Check NaN/Inf
+        for name, arr in zip(['search', 'label_loc', 'label_loc_weight', 'bbox'], [search_t, delta, delta_weight, bbox]):
+            if np.isnan(arr).any() or np.isinf(arr).any():
+                logger.warning(f"NaN/Inf in {name} for sample {sample_name}, frame {frame_idx}")
+                arr = np.nan_to_num(arr)
+
         return {
             'templates': templates_t,
             'search': search_t,
             'label_cls': cls,
             'label_loc': delta,
             'label_loc_weight': delta_weight,
-            'bbox': np.array(bbox)
+            'bbox': np.array(bbox, dtype=np.float32)
         }
-
 
 def save_processed_dataset(dataset, save_dir="training_dataset/processed_dataset", max_samples=1000):
     os.makedirs(save_dir, exist_ok=True)
@@ -204,13 +197,14 @@ def save_processed_dataset(dataset, save_dir="training_dataset/processed_dataset
             templates=data['templates'],
             search=data['search'],
             label_cls=data['label_cls'],
-            label_loc=data.get('label_loc'),
-            label_loc_weight=data.get('label_loc_weight'),
-            bbox=data.get('bbox')
+            label_loc=data['label_loc'],
+            label_loc_weight=data['label_loc_weight'],
+            bbox=data['bbox']
         )
         if i % 100 == 0 and i > 0:
             logger.info(f"Saved {i}/{total_samples} samples...")
     logger.info("✅ Done saving processed dataset!")
+
 
 
 def convert_annotations(input_file, output_file):
