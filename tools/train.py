@@ -1,3 +1,8 @@
+# train.py
+# Copyright (c) SenseTime. All Rights Reserved.
+
+from __future__ import absolute_import, division, print_function, unicode_literals
+
 import os
 import random
 import argparse
@@ -17,12 +22,15 @@ from pysot.core.config import cfg
 
 # -------------------- Safe Dataset --------------------
 class FilteredNPZDataset(Dataset):
-    def __init__(self, samples_root, max_label=1):
+    def __init__(self, samples_root):
         self.samples_root = samples_root
-        self.max_label = max_label
         self.samples = []
 
-        # Scan all npz files and filter invalid ones
+        # Tính max_label theo OUTPUT_SIZE và số anchor
+        self.max_label = cfg.TRAIN.OUTPUT_SIZE**2 * cfg.ANCHOR.ANCHOR_NUM - 1
+        print(f"[Dataset] max_label computed: {self.max_label}")
+
+        # Scan tất cả npz files và filter invalid
         for f in os.listdir(samples_root):
             if not f.endswith(".npz"):
                 continue
@@ -34,7 +42,7 @@ class FilteredNPZDataset(Dataset):
             nan_inf = any([np.isnan(data[k]).any() or np.isinf(data[k]).any()
                            for k in ["templates","search","label_loc","label_loc_weight","bbox"]])
             # Check label range
-            if label_cls.min() < 0 or label_cls.max() > max_label or nan_inf:
+            if label_cls.min() < 0 or label_cls.max() > self.max_label or nan_inf:
                 print(f"⚠️ Skipping invalid file: {f} | min={label_cls.min()}, max={label_cls.max()}, NaN/Inf={nan_inf}")
                 continue
             self.samples.append(path)
@@ -66,8 +74,8 @@ class FilteredNPZDataset(Dataset):
         }
 
 # -------------------- DataLoader --------------------
-def build_filtered_loader(samples_root, batch_size, num_workers, max_label=1):
-    dataset = FilteredNPZDataset(samples_root, max_label)
+def build_filtered_loader(samples_root, batch_size, num_workers):
+    dataset = FilteredNPZDataset(samples_root)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -81,6 +89,7 @@ def build_filtered_loader(samples_root, batch_size, num_workers, max_label=1):
 
 # -------------------- Optimizer & LR --------------------
 def build_opt_lr(model):
+    # Freeze backbone
     for param in model.backbone.parameters():
         param.requires_grad = False
     for m in model.backbone.modules():
@@ -111,13 +120,16 @@ def seed_torch(seed=42):
     torch.backends.cudnn.benchmark = False
 
 # -------------------- Safe Training Loop --------------------
-def train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size, max_label=1):
+def train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size):
     model = model.to(device)
     model.train()
     rank = get_rank() if world_size > 1 else 0
     os.makedirs(cfg.TRAIN.SNAPSHOT_DIR, exist_ok=True)
 
+    max_label = cfg.TRAIN.OUTPUT_SIZE**2 * cfg.ANCHOR.ANCHOR_NUM - 1
+
     for idx, data in enumerate(tqdm(train_loader, desc="Training")):
+        # Move to device
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
         data["label_cls"] = torch.clamp(data["label_cls"], 0, max_label)
 
@@ -125,21 +137,26 @@ def train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, devi
         if data["label_cls"].max() < 1:
             continue
 
-        outputs = model(data)
-        loss = outputs["total_loss"]
+        try:
+            outputs = model(data)
+            loss = outputs["total_loss"]
 
-        optimizer.zero_grad()
-        loss.backward()
-        if world_size > 1:
-            reduce_gradients(model)
+            optimizer.zero_grad()
+            loss.backward()
+            if world_size > 1:
+                reduce_gradients(model)
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
-        optimizer.step()
-        lr_scheduler.step()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
+            optimizer.step()
+            lr_scheduler.step()
 
-        if rank == 0:
-            for k, v in outputs.items():
-                tb_writer.add_scalar(k, v.item(), idx)
+            if rank == 0:
+                for k, v in outputs.items():
+                    tb_writer.add_scalar(k, v.item(), idx)
+
+        except RuntimeError as e:
+            print(f"⚠️ RuntimeError at batch {idx}: {e}")
+            continue
 
     if rank == 0:
         final_ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, "checkpoint_final.pth")
@@ -169,13 +186,19 @@ def main():
     seed_torch(42)
     cfg.merge_from_file(args.cfg)
 
+    # Compute OUTPUT_SIZE tự động nếu chưa đúng
+    computed_output_size = (cfg.TRAIN.SEARCH_SIZE - cfg.TRAIN.EXEMPLAR_SIZE) // cfg.ANCHOR.STRIDE + 1
+    if cfg.TRAIN.OUTPUT_SIZE != computed_output_size:
+        print(f"⚠️ Adjusting TRAIN.OUTPUT_SIZE from {cfg.TRAIN.OUTPUT_SIZE} to {computed_output_size}")
+        cfg.TRAIN.OUTPUT_SIZE = computed_output_size
+
     samples_root = "/content/drive/MyDrive/ZaloAI/processed_dataset/processed_dataset/samples"
     if not os.path.exists(samples_root):
         print(f"❌ Dataset path not found: {samples_root}")
         return
 
     train_loader = build_filtered_loader(samples_root, batch_size=cfg.TRAIN.BATCH_SIZE,
-                                         num_workers=cfg.TRAIN.NUM_WORKERS, max_label=1)
+                                         num_workers=cfg.TRAIN.NUM_WORKERS)
     if args.check_only:
         return
 
@@ -194,7 +217,7 @@ def main():
     else:
         print("✅ Using single-device training")
 
-    train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size, max_label=1)
+    train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size)
 
 if __name__ == "__main__":
     main()
