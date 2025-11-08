@@ -161,52 +161,76 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
         }
         torch.save(ckpt, final_ckpt_path)
         print(f"✅ Training completed. Final checkpoint saved: {final_ckpt_path}")
+        # -------------------- Dataset check --------------------
+def check_dataset(samples_root, max_label=1):
+    print(f"📦 Checking dataset: {samples_root}")
+    invalid_files = 0
+    for f in os.listdir(samples_root):
+        if not f.endswith(".npz"):
+            continue
+        path = os.path.join(samples_root, f)
+        data = np.load(path)
+        label_cls = np.clip(data["label_cls"], 0, max_label).astype(np.int64)
+        
+        # Check min/max
+        min_label, max_label_batch = label_cls.min(), label_cls.max()
+        # Check NaN/Inf
+        nan_inf = any([np.isnan(data[k]).any() or np.isinf(data[k]).any() for k in ["templates", "search", "label_loc", "label_loc_weight", "bbox"]])
+        
+        if min_label < 0 or max_label_batch > max_label or nan_inf:
+            invalid_files += 1
+            print(f"⚠️ Invalid file: {f} | min: {min_label}, max: {max_label_batch}, NaN/Inf: {nan_inf}")
+
+    print(f"✅ Dataset check done. Total files: {len(os.listdir(samples_root))}, Invalid: {invalid_files}")
+
 
 # -------------------- Main --------------------
 def main():
     parser = argparse.ArgumentParser(description="Train SiamRPN model")
     parser.add_argument("--cfg", type=str, required=True, help="Path to config.yaml")
+    parser.add_argument("--check_only", action="store_true", help="Only check dataset, do not train")
     args = parser.parse_args()
 
     # Thiết bị
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     has_gpu = device.type == "cuda"
 
-    # ------------------- CHỈNH Ở ĐÂY -------------------
     rank, world_size = 0, 1
     if has_gpu:
         print(f"🔥 Using {torch.cuda.device_count()} GPU(s)")
     else:
         print("⚙️  No GPU detected — training on CPU")
-    # -----------------------------------------------------
-
 
     seed_torch(42)
-
     print(f"📂 Loading config from: {args.cfg}")
     cfg.merge_from_file(args.cfg)
 
-    # Load mô hình
-    model = ModelBuilder().to(device).train()
+    # Load model (chỉ cần kiểm tra dataset không cần model)
+    if not args.check_only:
+        model = ModelBuilder().to(device).train()
 
-    # ✅ Load pretrained backbone nếu có
-    if cfg.BACKBONE.PRETRAINED:
-        # Đường dẫn model trong Drive
-        backbone_path = "/content/drive/MyDrive/ZaloAI/model.pth"
-        if os.path.exists(backbone_path):
-            print(f"✅ Loading pretrained backbone from: {backbone_path}")
-            load_pretrain(model.backbone, backbone_path)
-        else:
-            print("⚠️  Pretrained backbone not found")
+        if cfg.BACKBONE.PRETRAINED:
+            backbone_path = "/content/drive/MyDrive/ZaloAI/model.pth"
+            if os.path.exists(backbone_path):
+                print(f"✅ Loading pretrained backbone from: {backbone_path}")
+                load_pretrain(model.backbone, backbone_path)
+            else:
+                print("⚠️  Pretrained backbone not found")
 
-    # ✅ Sửa lại đường dẫn dataset
+    # Dataset
     samples_root = "/content/drive/MyDrive/ZaloAI/processed_dataset/processed_dataset/samples"
-
     if not os.path.exists(samples_root):
         print(f"❌ Dataset path not found: {samples_root}")
         return
     else:
         print(f"📦 Using dataset from: {samples_root}")
+
+    # -------------------- Kiểm tra dataset --------------------
+    check_dataset(samples_root)
+
+    # Nếu chỉ kiểm tra dataset thì dừng tại đây
+    if args.check_only:
+        return
 
     # Tạo DataLoader
     train_loader = build_data_loader_npz(
@@ -219,14 +243,13 @@ def main():
     optimizer, lr_scheduler = build_opt_lr(model)
     tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)
 
-    # Distributed / Single-device
     if has_gpu and world_size > 1:
         model = DistModule(model)
         print("✅ Using distributed training")
     else:
         print("✅ Using single-device training")
 
-    # Bắt đầu train
+    # Train
     train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size)
 
 
