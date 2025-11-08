@@ -41,13 +41,12 @@ class ProcessedNPZDataset(Dataset):
         
         # --- FIX label_cls ---
         label_cls = data["label_cls"]
-        # Convert -1 → 0, clip max 1
-        label_cls = np.clip(label_cls, 0, 1)
+        label_cls = np.clip(label_cls, 0, 1).astype(np.int64)  # convert -1 → 0, clip max 1
         
         return {
             "templates": torch.tensor(data["templates"], dtype=torch.float32),
             "search": torch.tensor(data["search"], dtype=torch.float32),
-            "label_cls": torch.tensor(label_cls, dtype=torch.long),  # dtype long cho CE Loss
+            "label_cls": torch.tensor(label_cls, dtype=torch.long),  # CrossEntropy yêu cầu long
             "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
             "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
             "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
@@ -100,6 +99,7 @@ def build_opt_lr(model):
     return optimizer, lr_scheduler
 
 # -------------------- Training loop --------------------
+# -------------------- Train Loop sửa --------------------
 def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size):
     model = model.to(device)
     model.train()
@@ -111,9 +111,16 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
 
     os.makedirs(cfg.TRAIN.SNAPSHOT_DIR, exist_ok=True)
 
+    # Debug CUDA device-side assert
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
     for idx, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.TRAIN.EPOCH}")):
-        # Chuyển sang device
+        # Chuyển device
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
+
+        # Skip batch toàn background
+        if data["label_cls"].max() < 1:
+            continue
 
         outputs = model(data)
         loss = outputs["total_loss"]
@@ -155,7 +162,7 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
             if epoch >= cfg.TRAIN.EPOCH:
                 break
 
-    # Lưu checkpoint cuối cùng (sau khi training xong)
+    # Lưu checkpoint cuối cùng
     if rank == 0:
         final_ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, "checkpoint_final.pth")
         ckpt = {
@@ -165,8 +172,7 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
         }
         torch.save(ckpt, final_ckpt_path)
         print(f"✅ Training completed. Final checkpoint saved: {final_ckpt_path}")
-
-
+        
 # -------------------- Main --------------------
 def main():
     parser = argparse.ArgumentParser(description="Train SiamRPN model")
