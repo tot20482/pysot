@@ -24,6 +24,7 @@ from pysot.core.config import cfg
 from tensorboardX import SummaryWriter
 
 # -------------------- Dataset --------------------
+# -------------------- Dataset --------------------
 class ProcessedNPZDataset(Dataset):
     def __init__(self, samples_root):
         self.samples_root = samples_root
@@ -37,14 +38,21 @@ class ProcessedNPZDataset(Dataset):
 
     def __getitem__(self, idx):
         data = np.load(self.samples[idx])
+        
+        # --- FIX label_cls ---
+        label_cls = data["label_cls"]
+        # Convert -1 → 0, clip max 1
+        label_cls = np.clip(label_cls, 0, 1)
+        
         return {
             "templates": torch.tensor(data["templates"], dtype=torch.float32),
             "search": torch.tensor(data["search"], dtype=torch.float32),
-            "label_cls": torch.tensor(data["label_cls"], dtype=torch.long),  # sửa float → long
+            "label_cls": torch.tensor(label_cls, dtype=torch.long),  # dtype long cho CE Loss
             "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
             "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
             "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
         }
+
 
 # -------------------- Seed --------------------
 def seed_torch(seed=42):
