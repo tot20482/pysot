@@ -39,18 +39,28 @@ class ProcessedNPZDataset(Dataset):
     def __getitem__(self, idx):
         data = np.load(self.samples[idx])
         
-        # --- FIX label_cls ---
-        label_cls = data["label_cls"]
-        label_cls = np.clip(label_cls, 0, 1).astype(np.int64)  # convert -1 → 0, clip max 1
+        label_cls = np.clip(data["label_cls"], 0, 1).astype(np.int64)
         
+        templates = torch.tensor(data["templates"], dtype=torch.float32)
+        search = torch.tensor(data["search"], dtype=torch.float32)
+        label_loc = torch.tensor(data["label_loc"], dtype=torch.float32)
+        label_loc_weight = torch.tensor(data["label_loc_weight"], dtype=torch.float32)
+        bbox = torch.tensor(data["bbox"], dtype=torch.float32)
+
+        # Kiểm tra NaN/Inf
+        for t in [templates, search, label_loc, label_loc_weight, bbox]:
+            if torch.isnan(t).any() or torch.isinf(t).any():
+                print(f"⚠️ NaN/Inf detected in file: {self.samples[idx]}")
+
         return {
-            "templates": torch.tensor(data["templates"], dtype=torch.float32),
-            "search": torch.tensor(data["search"], dtype=torch.float32),
-            "label_cls": torch.tensor(label_cls, dtype=torch.long),  # CrossEntropy yêu cầu long
-            "label_loc": torch.tensor(data["label_loc"], dtype=torch.float32),
-            "label_loc_weight": torch.tensor(data["label_loc_weight"], dtype=torch.float32),
-            "bbox": torch.tensor(data["bbox"], dtype=torch.float32),
+            "templates": templates,
+            "search": search,
+            "label_cls": torch.tensor(label_cls, dtype=torch.long),
+            "label_loc": label_loc,
+            "label_loc_weight": label_loc_weight,
+            "bbox": bbox,
         }
+
 
 
 # -------------------- Seed --------------------
@@ -172,7 +182,7 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
         }
         torch.save(ckpt, final_ckpt_path)
         print(f"✅ Training completed. Final checkpoint saved: {final_ckpt_path}")
-        
+
 # -------------------- Main --------------------
 def main():
     parser = argparse.ArgumentParser(description="Train SiamRPN model")
