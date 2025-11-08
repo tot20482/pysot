@@ -169,12 +169,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     has_gpu = device.type == "cuda"
 
+    # ------------------- CHỈNH Ở ĐÂY -------------------
+    rank, world_size = 0, 1
     if has_gpu:
-        rank, world_size = dist_init()
         print(f"🔥 Using {torch.cuda.device_count()} GPU(s)")
     else:
-        rank, world_size = 0, 1
         print("⚙️  No GPU detected — training on CPU")
+    # -----------------------------------------------------
+
 
     seed_torch(42)
 
