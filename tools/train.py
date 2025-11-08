@@ -132,17 +132,32 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
             for k, v in batch_info.items():
                 tb_writer.add_scalar(k, v, idx)
 
+        # Lưu checkpoint sau mỗi epoch
         if (idx + 1) % num_per_epoch == 0:
             epoch += 1
             if rank == 0:
+                ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f"checkpoint_e{epoch}.pth")
                 ckpt = {
                     "epoch": epoch,
                     "state_dict": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                 }
-                torch.save(ckpt, os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f"checkpoint_e{epoch}.pth"))
+                torch.save(ckpt, ckpt_path)
+                print(f"✅ Saved checkpoint: {ckpt_path}")
             if epoch >= cfg.TRAIN.EPOCH:
                 break
+
+    # Lưu checkpoint cuối cùng (sau khi training xong)
+    if rank == 0:
+        final_ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, "checkpoint_final.pth")
+        ckpt = {
+            "epoch": epoch,
+            "state_dict": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+        }
+        torch.save(ckpt, final_ckpt_path)
+        print(f"✅ Training completed. Final checkpoint saved: {final_ckpt_path}")
+
 
 # -------------------- Main --------------------
 def main():
