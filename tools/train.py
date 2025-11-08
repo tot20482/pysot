@@ -39,15 +39,16 @@ class ProcessedNPZDataset(Dataset):
     def __getitem__(self, idx):
         data = np.load(self.samples[idx])
         
+        # Fix label_cls
         label_cls = np.clip(data["label_cls"], 0, 1).astype(np.int64)
-        
+
         templates = torch.tensor(data["templates"], dtype=torch.float32)
         search = torch.tensor(data["search"], dtype=torch.float32)
         label_loc = torch.tensor(data["label_loc"], dtype=torch.float32)
         label_loc_weight = torch.tensor(data["label_loc_weight"], dtype=torch.float32)
         bbox = torch.tensor(data["bbox"], dtype=torch.float32)
 
-        # Kiểm tra NaN/Inf
+        # Check NaN/Inf
         for t in [templates, search, label_loc, label_loc_weight, bbox]:
             if torch.isnan(t).any() or torch.isinf(t).any():
                 print(f"⚠️ NaN/Inf detected in file: {self.samples[idx]}")
@@ -60,7 +61,6 @@ class ProcessedNPZDataset(Dataset):
             "label_loc_weight": label_loc_weight,
             "bbox": bbox,
         }
-
 
 
 # -------------------- Seed --------------------
@@ -109,35 +109,36 @@ def build_opt_lr(model):
     return optimizer, lr_scheduler
 
 # -------------------- Training loop --------------------
-# -------------------- Train Loop sửa --------------------
 def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size):
     model = model.to(device)
     model.train()
     rank = get_rank() if world_size > 1 else 0
-
-    num_per_epoch = max(len(train_loader.dataset) // (cfg.TRAIN.BATCH_SIZE * world_size), 1)
-    epoch = cfg.TRAIN.START_EPOCH
-    average_meter = AverageMeter()
-
     os.makedirs(cfg.TRAIN.SNAPSHOT_DIR, exist_ok=True)
 
-    # Debug CUDA device-side assert
+    # Debug device-side assert
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-    for idx, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.TRAIN.EPOCH}")):
-        # Chuyển device
+    for idx, data in enumerate(tqdm(train_loader, desc="Training")):
+        # Move to device
         data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
 
-        # Skip batch toàn background
+        # Debug: check label_cls
+        unique_labels = torch.unique(data["label_cls"])
+        if unique_labels.max() > 1 or unique_labels.min() < 0:
+            print(f"⚠️ Invalid label in batch {idx}: {unique_labels.tolist()}")
+            continue  # skip batch lỗi
+
+        # Skip batch toàn background (label=0)
         if data["label_cls"].max() < 1:
             continue
 
+        # Forward
         outputs = model(data)
         loss = outputs["total_loss"]
 
+        # Backward
         optimizer.zero_grad()
         loss.backward()
-
         if world_size > 1:
             reduce_gradients(model)
 
@@ -145,38 +146,16 @@ def train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, w
         optimizer.step()
         lr_scheduler.step()
 
-        # average_reduce chỉ dùng multi-GPU
-        if world_size > 1:
-            batch_info = {k: average_reduce(v.item()) for k, v in outputs.items()}
-        else:
-            batch_info = {k: v.item() for k, v in outputs.items()}
-
-        average_meter.update(**batch_info)
-
+        # Logging
         if rank == 0:
+            batch_info = {k: v.item() for k, v in outputs.items()}
             for k, v in batch_info.items():
                 tb_writer.add_scalar(k, v, idx)
 
-        # Lưu checkpoint sau mỗi epoch
-        if (idx + 1) % num_per_epoch == 0:
-            epoch += 1
-            if rank == 0:
-                ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, f"checkpoint_e{epoch}.pth")
-                ckpt = {
-                    "epoch": epoch,
-                    "state_dict": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                }
-                torch.save(ckpt, ckpt_path)
-                print(f"✅ Saved checkpoint: {ckpt_path}")
-            if epoch >= cfg.TRAIN.EPOCH:
-                break
-
-    # Lưu checkpoint cuối cùng
+    # Save final checkpoint
     if rank == 0:
         final_ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, "checkpoint_final.pth")
         ckpt = {
-            "epoch": epoch,
             "state_dict": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
             "optimizer": optimizer.state_dict(),
         }
