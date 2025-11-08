@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--cfg", type=str, required=True, help="Path to config.yaml")
     args = parser.parse_args()
 
+    # Thiết bị
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     has_gpu = device.type == "cuda"
 
@@ -165,32 +166,49 @@ def main():
     print(f"📂 Loading config from: {args.cfg}")
     cfg.merge_from_file(args.cfg)
 
+    # Load mô hình
     model = ModelBuilder().to(device).train()
 
-    # Load pretrained backbone nếu có
+    # ✅ Load pretrained backbone nếu có
     if cfg.BACKBONE.PRETRAINED:
-        backbone_path = "/kaggle/input/mobilenetv2/model.pth"
+        # Đường dẫn model trong Drive
+        backbone_path = "/content/drive/MyDrive/ZaloAI/model.pth"
         if os.path.exists(backbone_path):
+            print(f"✅ Loading pretrained backbone from: {backbone_path}")
             load_pretrain(model.backbone, backbone_path)
         else:
             print("⚠️  Pretrained backbone not found")
 
+    # ✅ Sửa lại đường dẫn dataset
+    samples_root = "/content/drive/MyDrive/ZaloAI/processed_dataset/processed_dataset/samples"
+
+    if not os.path.exists(samples_root):
+        print(f"❌ Dataset path not found: {samples_root}")
+        return
+    else:
+        print(f"📦 Using dataset from: {samples_root}")
+
+    # Tạo DataLoader
     train_loader = build_data_loader_npz(
-        samples_root="/kaggle/input/training-data/processed_dataset/samples",
+        samples_root=samples_root,
         batch_size=cfg.TRAIN.BATCH_SIZE,
         num_workers=cfg.TRAIN.NUM_WORKERS,
     )
 
+    # Optimizer + Scheduler
     optimizer, lr_scheduler = build_opt_lr(model)
     tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)
 
+    # Distributed / Single-device
     if has_gpu and world_size > 1:
         model = DistModule(model)
         print("✅ Using distributed training")
     else:
         print("✅ Using single-device training")
 
+    # Bắt đầu train
     train_npz(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size)
+
 
 
 if __name__ == "__main__":
