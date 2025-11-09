@@ -13,7 +13,7 @@ cfg = __C
 
 __C.META_ARC = "siamrpn_r50_l234_dwxcorr"
 
-__C.CUDA = False
+__C.CUDA = True
 
 # ------------------------------------------------------------------------ #
 # Training options
@@ -51,9 +51,9 @@ __C.TRAIN.PRETRAINED = ''
 
 __C.TRAIN.LOG_DIR = './logs'
 
-__C.TRAIN.SNAPSHOT_DIR = './snapshot'
+__C.TRAIN.SNAPSHOT_DIR = '/kaggle/working'
 
-__C.TRAIN.EPOCH = 20
+__C.TRAIN.EPOCH = 10
 
 __C.TRAIN.START_EPOCH = 0
 
@@ -173,7 +173,7 @@ __C.BACKBONE.TYPE = 'res50'
 __C.BACKBONE.KWARGS = CN(new_allowed=True)
 
 # Pretrained backbone weights
-__C.BACKBONE.PRETRAINED = ''
+__C.BACKBONE.PRETRAINED = '/kaggle/input/alexnet/model.pth'
 
 # Train layers
 __C.BACKBONE.TRAIN_LAYERS = ['layer2', 'layer3', 'layer4']
