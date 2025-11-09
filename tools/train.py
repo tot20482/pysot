@@ -192,7 +192,7 @@ def main():
         print(f"⚠️ Adjusting TRAIN.OUTPUT_SIZE from {cfg.TRAIN.OUTPUT_SIZE} to {computed_output_size}")
         cfg.TRAIN.OUTPUT_SIZE = computed_output_size
 
-    samples_root = "/kaggle/input/processed-data/processed_dataset/samples"
+    samples_root = "/kaggle/working/fixed_dataset"
     if not os.path.exists(samples_root):
         print(f"❌ Dataset path not found: {samples_root}")
         return
