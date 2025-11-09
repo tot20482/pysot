@@ -11,7 +11,7 @@ __C = CN()
 
 cfg = __C
 
-__C.META_ARC = "siamrpn_alex_dwxcorr"
+__C.META_ARC = "siamrpn_alex_dwxcorr_otb"
 
 __C.CUDA = True
 
@@ -43,7 +43,7 @@ __C.TRAIN.SEARCH_SIZE = 255
 
 __C.TRAIN.BASE_SIZE = 8
 
-__C.TRAIN.OUTPUT_SIZE = 16
+__C.TRAIN.OUTPUT_SIZE = 17
 
 __C.TRAIN.RESUME = ''
 
