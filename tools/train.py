@@ -120,7 +120,7 @@ def seed_torch(seed=42):
     torch.backends.cudnn.benchmark = False
 
 # -------------------- Safe Training Loop --------------------
-def train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size):
+def train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size, epochs):
     model = model.to(device)
     model.train()
     rank = get_rank() if world_size > 1 else 0
@@ -128,35 +128,37 @@ def train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, devi
 
     max_label = cfg.TRAIN.OUTPUT_SIZE**2 * cfg.ANCHOR.ANCHOR_NUM - 1
 
-    for idx, data in enumerate(tqdm(train_loader, desc="Training")):
-        # Move to device
-        data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
-        data["label_cls"] = torch.clamp(data["label_cls"], 0, max_label)
+    for epoch in range(epochs):
+        print(f"\n=== Epoch {epoch+1}/{epochs} ===")
+        for idx, data in enumerate(tqdm(train_loader, desc="Training")):
+            # Move to device
+            data = {k: v.to(device, non_blocking=True) for k, v in data.items()}
+            data["label_cls"] = torch.clamp(data["label_cls"], 0, max_label)
 
-        # Skip batch toàn background
-        if data["label_cls"].max() < 1:
-            continue
+            # Skip batch toàn background
+            if data["label_cls"].max() < 1:
+                continue
 
-        try:
-            outputs = model(data)
-            loss = outputs["total_loss"]
+            try:
+                outputs = model(data)
+                loss = outputs["total_loss"]
 
-            optimizer.zero_grad()
-            loss.backward()
-            if world_size > 1:
-                reduce_gradients(model)
+                optimizer.zero_grad()
+                loss.backward()
+                if world_size > 1:
+                    reduce_gradients(model)
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
-            optimizer.step()
-            lr_scheduler.step()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.GRAD_CLIP)
+                optimizer.step()
+                lr_scheduler.step()
 
-            if rank == 0:
-                for k, v in outputs.items():
-                    tb_writer.add_scalar(k, v.item(), idx)
+                if rank == 0:
+                    for k, v in outputs.items():
+                        tb_writer.add_scalar(k, v.item(), epoch*len(train_loader)+idx)
 
-        except RuntimeError as e:
-            print(f"⚠️ RuntimeError at batch {idx}: {e}")
-            continue
+            except RuntimeError as e:
+                print(f"⚠️ RuntimeError at batch {idx}: {e}")
+                continue
 
     if rank == 0:
         final_ckpt_path = os.path.join(cfg.TRAIN.SNAPSHOT_DIR, "checkpoint_final.pth")
@@ -226,7 +228,10 @@ def main():
     else:
         print("✅ Using single-device training")
 
-    train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size)
+    train_filtered(train_loader, model, optimizer, lr_scheduler, tb_writer, device, world_size, epochs=cfg.TRAIN.EPOCH)
+
+
+
 
 if __name__ == "__main__":
     main()
