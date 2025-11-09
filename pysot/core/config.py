@@ -172,7 +172,10 @@ __C.BACKBONE.TYPE = 'res50'
 
 __C.BACKBONE.KWARGS = CN(new_allowed=True)
 
-# Pretrained backbone weights
+# Pretrained backbone flag
+__C.BACKBONE.PRETRAINED = True  # hoặc False nếu không dùng pretrained
+
+# Pretrained backbone path
 __C.BACKBONE.PATH = '/kaggle/input/alexnet/model.pth'
 
 # Train layers
