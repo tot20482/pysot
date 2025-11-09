@@ -2,14 +2,12 @@ META_ARC: "siamrpn_alex_dwxcorr"
 
 # ---------------- Backbone ----------------
 BACKBONE:
-  TYPE: "alexnet"           # đổi từ alexnetlegacy -> alexnet
-  PRETRAINED: False   # bool
-  PATH: "/kaggle/input/alexnet/model.pth"
-  KWARGS:
-    width_mult: 1.0          # scale width của AlexNet
-  LAYERS_LR: 0.1             # LR scale nếu fine-tune
-
-# ---------------- Adjust ----------------
+    TYPE: "alexnetlegacy"
+    KWARGS:
+        width_mult: 1.0
+    PRETRAINED: True         # giữ bool
+    PATH: "/kaggle/input/alexnet/model.pth"   # thêm key PATH cho đường dẫn
+    
 ADJUST:
   ADJUST: false
 
