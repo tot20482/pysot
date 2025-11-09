@@ -205,8 +205,21 @@ def main():
     model = ModelBuilder().to(device).train()
     if cfg.BACKBONE.PRETRAINED:
         backbone_path = "/kaggle/input/alexnet/model.pth"
-        if os.path.exists(backbone_path):
-            load_pretrain(model.backbone, backbone_path)
+    if os.path.exists(backbone_path):
+        print(f"⚡ Loading AlexNet pretrained: {backbone_path}")
+        checkpoint = torch.load(backbone_path, map_location=device)
+
+        # Nếu checkpoint có dict dạng 'state_dict', lấy ra
+        if 'state_dict' in checkpoint:
+            checkpoint = checkpoint['state_dict']
+
+        # Lọc ra các key 'features.'
+        pretrained_dict = {k: v for k, v in checkpoint.items() if 'features' in k}
+
+        # Load vào model.backbone, bỏ qua các key không match
+        model.backbone.load_state_dict(pretrained_dict, strict=False)
+        print("✅ Pretrained AlexNet loaded into backbone")
+
 
     optimizer, lr_scheduler = build_opt_lr(model)
     tb_writer = SummaryWriter(cfg.TRAIN.LOG_DIR)

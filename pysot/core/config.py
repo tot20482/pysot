@@ -11,7 +11,7 @@ __C = CN()
 
 cfg = __C
 
-__C.META_ARC = "siamrpn_alex_dwxcorr_otb"
+__C.META_ARC = "siamrpn_alex_dwxcorr"
 
 __C.CUDA = True
 
