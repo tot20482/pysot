@@ -13,12 +13,12 @@ from pysot.core.config import cfg
 # ==========================
 # CONFIG
 # ==========================
-cfg_path = "experiments/siamrpn_alex_dwxcorr_otb/config.yaml"
+cfg_path = "/kaggle/working/pysot/experiments/siamrpn_alex_dwxcorr_otb/config.yaml"
 checkpoint_path = "model/checkpoint_final.pth"
-test_root = "testing_dataset/public_test/public_test/samples"
+test_root = "/kaggle/input/zaloai2025-aeroeyes/public_test/public_test/samples"
 
-submission_json_path = "submission.json"
-submission_zip_path = "submission.zip"
+submission_json_path = "/kaggle/working/submission.json"
+submission_zip_path = "/kaggle/working/submission.zip"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
