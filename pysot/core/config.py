@@ -173,7 +173,7 @@ __C.BACKBONE.TYPE = 'res50'
 __C.BACKBONE.KWARGS = CN(new_allowed=True)
 
 # Pretrained backbone weights
-__C.BACKBONE.PRETRAINED = '/kaggle/input/alexnet/model.pth'
+__C.BACKBONE.PATH = '/kaggle/input/alexnet/model.pth'
 
 # Train layers
 __C.BACKBONE.TRAIN_LAYERS = ['layer2', 'layer3', 'layer4']
