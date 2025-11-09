@@ -79,7 +79,7 @@ class ModelBuilder(nn.Module):
         device = next(self.parameters()).device
 
         # Chuyển dữ liệu sang device
-        templates = data['templates'].to(device)
+        templates = data['template'].to(device)
         search = data['search'].to(device)
         label_cls = data['label_cls'].to(device)
         label_loc = data['label_loc'].to(device)
