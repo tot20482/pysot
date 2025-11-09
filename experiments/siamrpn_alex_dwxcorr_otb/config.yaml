@@ -3,7 +3,7 @@ META_ARC: "siamrpn_alex_dwxcorr"
 # ---------------- Backbone ----------------
 BACKBONE:
   TYPE: "alexnet"           # đổi từ alexnetlegacy -> alexnet
-  PRETRAINED: True   # bool
+  PRETRAINED: False   # bool
   PATH: "/kaggle/input/alexnet/model.pth"
   KWARGS:
     width_mult: 1.0          # scale width của AlexNet
