@@ -1,38 +1,39 @@
 import os
 import json
-from glob import glob
+import zipfile
 import logging
 import cv2
 import numpy as np
+from glob import glob
 from torch.utils.data import Dataset
 from pysot.datasets.augmentation import Augmentation
 from pysot.datasets.anchor_target import AnchorTarget
 from pysot.core.config import cfg
 from pysot.utils.bbox import center2corner, Center
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, filename="dataset_errors.log", filemode="w")
+# ===== Logging setup =====
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TrkDataset")
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 logger.addHandler(console)
 
+# ===== Dataset class =====
 class TrkDataset(Dataset):
     def __init__(self, samples_root=None, ann_path=None, num_templates=3, frame_step=1):
         super().__init__()
-        self.samples_root = os.path.abspath(samples_root or "training_dataset/observing/train/samples")
+        self.samples_root = os.path.abspath(samples_root)
         self.num_templates = num_templates
         self.frame_step = frame_step
 
         # Load annotations
-        ann_path = ann_path or os.path.join(os.path.dirname(self.samples_root), 'annotations', 'annotations.json')
-        if os.path.exists(ann_path):
+        if ann_path and os.path.exists(ann_path):
             with open(ann_path, 'r') as f:
                 self.annotations = json.load(f)
             logger.info(f"Loaded annotation file: {ann_path}")
         else:
-            logger.warning(f"Annotation file not found: {ann_path}, using empty annotation dict")
             self.annotations = {}
+            logger.warning(f"Annotation file not found: {ann_path}")
 
         # Sample folders
         self.sample_dirs = sorted([d for d in glob(os.path.join(self.samples_root, '*')) if os.path.isdir(d)])
@@ -98,7 +99,6 @@ class TrkDataset(Dataset):
                 return None, None, None
             bbox = ann_bboxes.get(str(fidx))
             return fidx, frame, bbox
-        # Random frame
         fidx = np.random.randint(0, frame_count)
         cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
         ret, frame = cap.read()
@@ -134,7 +134,6 @@ class TrkDataset(Dataset):
         sample_dir = self.sample_dirs[np.random.randint(0, len(self.sample_dirs))]
         sample_name = os.path.basename(sample_dir)
 
-        # Templates
         templates_np = self._load_templates(sample_dir)
         templates_proc = []
         for timg in templates_np:
@@ -147,7 +146,6 @@ class TrkDataset(Dataset):
             templates_proc.append(self.to_tensor(tpl_crop))
         templates_t = np.stack(templates_proc, axis=0)
 
-        # Search
         ann_for_video = self.annotations.get(sample_name, None)
         video_path = os.path.join(sample_dir, 'drone_video.mp4')
         frame_idx, search_frame, ann_bbox = self._sample_frame_from_video(video_path, ann_for_video)
@@ -168,10 +166,7 @@ class TrkDataset(Dataset):
         search_t = self.to_tensor(cv2.cvtColor(search_crop.astype(np.float32), cv2.COLOR_BGR2RGB))
         cls, delta, delta_weight, overlap = self.anchor_target(bbox, cfg.TRAIN.OUTPUT_SIZE, neg=False)
 
-        # Clip label_cls
         cls = np.clip(cls, 0, 1).astype(np.int64)
-
-        # Check NaN/Inf
         for name, arr in zip(['search', 'label_loc', 'label_loc_weight', 'bbox'], [search_t, delta, delta_weight, bbox]):
             if np.isnan(arr).any() or np.isinf(arr).any():
                 logger.warning(f"NaN/Inf in {name} for sample {sample_name}, frame {frame_idx}")
@@ -186,10 +181,11 @@ class TrkDataset(Dataset):
             'bbox': np.array(bbox, dtype=np.float32)
         }
 
-def save_processed_dataset(dataset, save_dir="training_dataset/processed_dataset", max_samples=1000):
+# ===== Functions =====
+def save_processed_dataset(dataset, save_dir="training_dataset/processed_dataset/samples", max_samples=1000):
     os.makedirs(save_dir, exist_ok=True)
     logger.info(f"Start saving processed dataset to {save_dir} ...")
-    total_samples = min(dataset.num, max_samples)
+    total_samples = min(len(dataset), max_samples)
     for i in range(total_samples):
         data = dataset[i]
         np.savez_compressed(
@@ -204,8 +200,6 @@ def save_processed_dataset(dataset, save_dir="training_dataset/processed_dataset
         if i % 100 == 0 and i > 0:
             logger.info(f"Saved {i}/{total_samples} samples...")
     logger.info("✅ Done saving processed dataset!")
-
-
 
 def convert_annotations(input_file, output_file):
     logger.info(f"Loading annotation file: {input_file}")
@@ -240,28 +234,52 @@ def convert_annotations(input_file, output_file):
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w") as f:
         json.dump(merged, f, indent=2)
-
     logger.info(f"✅ Conversion done! Saved to: {output_file}")
     logger.info(f"📌 Total videos processed: {len(merged)}")
     return output_file
 
+def zip_folder(folder_path, zip_path):
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, start=folder_path)
+                zipf.write(abs_path, rel_path)
+    logger.info(f"✅ Folder zipped to {zip_path}")
 
+# ===== Main =====
 def main():
+    # Load config
     config_path = "experiments/siamrpn_alex_dwxcorr_otb/config.yaml"
     cfg.merge_from_file(config_path)
     cfg.freeze()
+    logger.info("✅ Config loaded and frozen.")
 
+    # Convert annotations
     ann_input_file = "training_dataset/observing/train/annotations/annotations.json"
     ann_output_file = "training_dataset/processed_dataset/annotations/annotations.json"
+    os.makedirs(os.path.dirname(ann_output_file), exist_ok=True)
     convert_annotations(ann_input_file, ann_output_file)
 
+    # Build dataset
     dataset = TrkDataset(
         samples_root="training_dataset/observing/train/samples",
         ann_path=ann_output_file
     )
 
-    save_processed_dataset(dataset, save_dir="training_dataset/processed_dataset/samples", max_samples=1000)
+    # Save processed dataset
+    save_dir = "training_dataset/processed_dataset/samples"
+    save_processed_dataset(dataset, save_dir=save_dir, max_samples=1000)
 
+    # Zip folder
+    zip_path = "training_dataset/processed_dataset.zip"
+    zip_folder(save_dir, zip_path)
+
+    # Console check
+    print("✅ Dataset processing finished!")
+    print(f"Processed samples folder: {save_dir}")
+    print(f"Zipped dataset: {zip_path}")
+    print(f"Total samples processed: {len(dataset)}")
 
 if __name__ == "__main__":
     main()
