@@ -192,7 +192,7 @@ def main():
         print(f"⚠️ Adjusting TRAIN.OUTPUT_SIZE from {cfg.TRAIN.OUTPUT_SIZE} to {computed_output_size}")
         cfg.TRAIN.OUTPUT_SIZE = computed_output_size
 
-    samples_root = "/content/drive/MyDrive/ZaloAI/processed_dataset/processed_dataset/samples"
+    samples_root = "/kaggle/input/dataset/processed_dataset/samples"
     if not os.path.exists(samples_root):
         print(f"❌ Dataset path not found: {samples_root}")
         return
@@ -204,7 +204,7 @@ def main():
 
     model = ModelBuilder().to(device).train()
     if cfg.BACKBONE.PRETRAINED:
-        backbone_path = "/content/drive/MyDrive/ZaloAI/model.pth"
+        backbone_path = "/kaggle/input/alexnet/model.pth"
         if os.path.exists(backbone_path):
             load_pretrain(model.backbone, backbone_path)
 
